@@ -3,6 +3,7 @@ COMMIT = $(shell git rev-parse --short HEAD)
 TAGS_GO120 = with_gvisor,with_dhcp,with_wireguard,with_reality_server,with_clash_api,with_quic,with_utls
 TAGS_GO121 = with_ech
 TAGS ?= $(TAGS_GO118),$(TAGS_GO120),$(TAGS_GO121)
+TAGSS ?= $(TAGS_GO118),$(TAGS_GO120),$(TAGS_GO121),with_v2ray_api
 TAGS_TEST ?= with_gvisor,with_quic,with_wireguard,with_grpc,with_ech,with_utls,with_reality_server
 
 GOHOSTOS = $(shell go env GOHOSTOS)
@@ -11,13 +12,17 @@ VERSION=$(shell CGO_ENABLED=0 GOOS=$(GOHOSTOS) GOARCH=$(GOHOSTARCH) go run ./cmd
 
 PARAMS = -v -trimpath -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$(VERSION)' -s -w -buildid="
 MAIN_PARAMS = $(PARAMS) -tags $(TAGS)
+MAIN_PARAMSS = $(PARAMS) -tags $(TAGSS)
 MAIN = ./cmd/sing-box
 PREFIX ?= $(shell go env GOPATH)
 
 .PHONY: test release docs build
 
-build:
+build-android:
 	go build $(MAIN_PARAMS) $(MAIN)
+
+build:
+	go build $(MAIN_PARAMSS) $(MAIN)
 
 ci_build_go120:
 	go build $(PARAMS) $(MAIN)
