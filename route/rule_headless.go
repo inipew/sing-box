@@ -31,9 +31,12 @@ type DefaultHeadlessRule struct {
 }
 
 func NewDefaultHeadlessRule(router adapter.Router, options option.DefaultHeadlessRule) (*DefaultHeadlessRule, error) {
+	var count int
 	rule := &DefaultHeadlessRule{
 		abstractDefaultRule{
-			invert: options.Invert,
+			abstractRule: abstractRule{
+				invert: options.Invert,
+			},
 		},
 	}
 	if len(options.Network) > 0 {
@@ -45,15 +48,18 @@ func NewDefaultHeadlessRule(router adapter.Router, options option.DefaultHeadles
 		item := NewDomainItem(options.Domain, options.DomainSuffix)
 		rule.destinationAddressItems = append(rule.destinationAddressItems, item)
 		rule.allItems = append(rule.allItems, item)
+		count += len(options.Domain) + len(options.DomainSuffix)
 	} else if options.DomainMatcher != nil {
 		item := NewRawDomainItem(options.DomainMatcher)
 		rule.destinationAddressItems = append(rule.destinationAddressItems, item)
 		rule.allItems = append(rule.allItems, item)
+		count += 1
 	}
 	if len(options.DomainKeyword) > 0 {
 		item := NewDomainKeywordItem(options.DomainKeyword)
 		rule.destinationAddressItems = append(rule.destinationAddressItems, item)
 		rule.allItems = append(rule.allItems, item)
+		count += len(options.DomainKeyword)
 	}
 	if len(options.DomainRegex) > 0 {
 		item, err := NewDomainRegexItem(options.DomainRegex)
@@ -62,6 +68,7 @@ func NewDefaultHeadlessRule(router adapter.Router, options option.DefaultHeadles
 		}
 		rule.destinationAddressItems = append(rule.destinationAddressItems, item)
 		rule.allItems = append(rule.allItems, item)
+		count += len(options.DomainRegex)
 	}
 	if len(options.SourceIPCIDR) > 0 {
 		item, err := NewIPCIDRItem(true, options.SourceIPCIDR)
@@ -82,10 +89,12 @@ func NewDefaultHeadlessRule(router adapter.Router, options option.DefaultHeadles
 		}
 		rule.destinationIPCIDRItems = append(rule.destinationIPCIDRItems, item)
 		rule.allItems = append(rule.allItems, item)
+		count += len(options.IPCIDR)
 	} else if options.IPSet != nil {
 		item := NewRawIPCIDRItem(false, options.IPSet)
 		rule.destinationIPCIDRItems = append(rule.destinationIPCIDRItems, item)
 		rule.allItems = append(rule.allItems, item)
+		count += 1
 	}
 	if len(options.SourcePort) > 0 {
 		item := NewPortItem(true, options.SourcePort)
@@ -104,6 +113,7 @@ func NewDefaultHeadlessRule(router adapter.Router, options option.DefaultHeadles
 		item := NewPortItem(false, options.Port)
 		rule.destinationPortItems = append(rule.destinationPortItems, item)
 		rule.allItems = append(rule.allItems, item)
+		count += len(options.Port)
 	}
 	if len(options.PortRange) > 0 {
 		item, err := NewPortRangeItem(false, options.PortRange)
@@ -112,6 +122,7 @@ func NewDefaultHeadlessRule(router adapter.Router, options option.DefaultHeadles
 		}
 		rule.destinationPortItems = append(rule.destinationPortItems, item)
 		rule.allItems = append(rule.allItems, item)
+		count += len(options.PortRange)
 	}
 	if len(options.ProcessName) > 0 {
 		item := NewProcessItem(options.ProcessName)
@@ -142,6 +153,11 @@ func NewDefaultHeadlessRule(router adapter.Router, options option.DefaultHeadles
 			rule.allItems = append(rule.allItems, item)
 		}
 	}
+	if len(rule.items) > 0 {
+		rule.ruleCount = 1
+	} else {
+		rule.ruleCount = count
+	}
 	return rule, nil
 }
 
@@ -154,8 +170,10 @@ type LogicalHeadlessRule struct {
 func NewLogicalHeadlessRule(router adapter.Router, options option.LogicalHeadlessRule) (*LogicalHeadlessRule, error) {
 	r := &LogicalHeadlessRule{
 		abstractLogicalRule{
-			rules:  make([]adapter.HeadlessRule, len(options.Rules)),
-			invert: options.Invert,
+			abstractRule: abstractRule{
+				invert: options.Invert,
+			},
+			rules: make([]adapter.HeadlessRule, len(options.Rules)),
 		},
 	}
 	switch options.Mode {
@@ -166,12 +184,20 @@ func NewLogicalHeadlessRule(router adapter.Router, options option.LogicalHeadles
 	default:
 		return nil, E.New("unknown logical mode: ", options.Mode)
 	}
+	var count int
 	for i, subRule := range options.Rules {
 		rule, err := NewHeadlessRule(router, subRule)
 		if err != nil {
 			return nil, E.Cause(err, "sub rule[", i, "]")
 		}
 		r.rules[i] = rule
+		count += rule.RuleCount()
+	}
+	switch options.Mode {
+	case C.LogicalTypeAnd:
+		r.ruleCount = 1
+	case C.LogicalTypeOr:
+		r.ruleCount = count
 	}
 	return r, nil
 }
