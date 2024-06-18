@@ -35,7 +35,8 @@ type InboundContext struct {
 	Protocol    string
 	User        string
 	Outbound    string
-
+	SniffDomain string
+	
 	// cache
 
 	InboundDetour        string

@@ -854,8 +854,8 @@ func (r *Router) RouteConnection(ctx context.Context, conn net.Conn, metadata ad
 		)
 		if sniffMetadata != nil {
 			metadata.Protocol = sniffMetadata.Protocol
-			metadata.Domain = sniffMetadata.Domain
-			if metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
+			metadata.SniffDomain = sniffMetadata.Domain
+			if !metadata.Destination.IsFqdn() && metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
 				metadata.Destination = M.Socksaddr{
 					Fqdn: metadata.Domain,
 					Port: metadata.Destination.Port,
@@ -876,7 +876,7 @@ func (r *Router) RouteConnection(ctx context.Context, conn net.Conn, metadata ad
 		}
 	}
 
-	if r.dnsReverseMapping != nil && metadata.Domain == "" {
+	if r.dnsReverseMapping != nil {
 		domain, loaded := r.dnsReverseMapping.Query(metadata.Destination.Addr)
 		if loaded {
 			metadata.Domain = domain
@@ -990,8 +990,8 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 			)
 			if sniffMetadata != nil {
 				metadata.Protocol = sniffMetadata.Protocol
-				metadata.Domain = sniffMetadata.Domain
-				if metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
+				metadata.SniffDomain = sniffMetadata.Domain
+				if !metadata.Destination.IsFqdn() && metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
 					metadata.Destination = M.Socksaddr{
 						Fqdn: metadata.Domain,
 						Port: metadata.Destination.Port,
@@ -1006,7 +1006,7 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 		}
 		conn = bufio.NewCachedPacketConn(conn, buffer, destination)
 	}
-	if r.dnsReverseMapping != nil && metadata.Domain == "" {
+	if r.dnsReverseMapping != nil {
 		domain, loaded := r.dnsReverseMapping.Query(metadata.Destination.Addr)
 		if loaded {
 			metadata.Domain = domain
