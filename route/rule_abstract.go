@@ -21,6 +21,7 @@ type abstractDefaultRule struct {
 	ruleSetItem             RuleItem
 	invert                  bool
 	outbound                string
+	ruleCount				uint64
 }
 
 func (r *abstractDefaultRule) Type() string {
@@ -162,11 +163,20 @@ func (r *abstractDefaultRule) String() string {
 	}
 }
 
+func (r *abstractDefaultRule) RuleCount() uint64 {
+	return r.ruleCount
+}
+
 type abstractLogicalRule struct {
 	rules    []adapter.HeadlessRule
 	mode     string
 	invert   bool
 	outbound string
+	ruleCount uint64
+}
+
+func (r *abstractLogicalRule) RuleCount() uint64 {
+	return r.ruleCount
 }
 
 func (r *abstractLogicalRule) Type() string {

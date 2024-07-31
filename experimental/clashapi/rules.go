@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/sagernet/sing-box/adapter"
+	N "github.com/sagernet/sing/common/network"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
@@ -23,16 +24,55 @@ type Rule struct {
 
 func getRules(router adapter.Router) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rawRules := router.Rules()
 
 		var rules []Rule
-		for _, rule := range rawRules {
+		dnsRules := router.DNSRules()
+		for _, rule := range dnsRules {
 			rules = append(rules, Rule{
-				Type:    rule.Type(),
-				Payload: rule.String(),
-				Proxy:   rule.Outbound(),
+				Type:     "DNS",
+				Payload:  rule.String(),
+				Proxy:    rule.Outbound(),
 			})
 		}
+		rules = append(rules, Rule{
+			Type:    "DNS",
+			Payload: "final",
+			Proxy:   router.DefaultDNSServer(),
+		})
+
+		routeRules := router.Rules()
+		for _, rule := range routeRules {
+			rules = append(rules, Rule{
+				Type:     "ROUTE",
+				Payload:  rule.String(),
+				Proxy:    rule.Outbound(),
+			})
+		}
+
+		finalRules := []Rule{}
+		finalTCPOut, _ := router.DefaultOutbound(N.NetworkTCP)
+		finalTCPTag := finalTCPOut.Tag()
+		if finalUDPOut, _ := router.DefaultOutbound(N.NetworkUDP); finalTCPOut == finalUDPOut {
+			finalRules = append(finalRules, Rule{
+				Type:    "ROUTE",
+				Payload: "final",
+				Proxy:   finalTCPTag,
+			})
+		} else {
+			finalUDPTag := finalUDPOut.Tag()
+			finalRules = append(finalRules, Rule{
+				Type:    "ROUTE",
+				Payload: "final_tcp",
+				Proxy:   finalTCPTag,
+			})
+			finalRules = append(finalRules, Rule{
+				Type:    "ROUTE",
+				Payload: "final_udp",
+				Proxy:   finalUDPTag,
+			})
+		}
+
+		rules = append(rules, finalRules...)
 
 		render.JSON(w, r, render.M{
 			"rules": rules,
