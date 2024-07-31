@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sagernet/fswatch"
 	"github.com/sagernet/sing-box/adapter"
@@ -34,6 +35,7 @@ type LocalRuleSet struct {
 	fileFormat string
 	watcher    *fswatch.Watcher
 	refs       atomic.Int32
+	ruleCount   uint64
 }
 
 func NewLocalRuleSet(ctx context.Context, router adapter.Router, logger logger.Logger, options option.RuleSet) (*LocalRuleSet, error) {
@@ -78,6 +80,14 @@ func NewLocalRuleSet(ctx context.Context, router adapter.Router, logger logger.L
 
 func (s *LocalRuleSet) Name() string {
 	return s.tag
+}
+
+func (s *LocalRuleSet) Type() string {
+	return "local"
+}
+
+func (s *LocalRuleSet) RuleCount() uint64 {
+	return s.ruleCount
 }
 
 func (s *LocalRuleSet) String() string {
@@ -128,17 +138,22 @@ func (s *LocalRuleSet) reloadFile(path string) error {
 
 func (s *LocalRuleSet) reloadRules(headlessRules []option.HeadlessRule) error {
 	rules := make([]adapter.HeadlessRule, len(headlessRules))
-	var err error
+	var ruleCount uint64
 	for i, ruleOptions := range headlessRules {
-		rules[i], err = NewHeadlessRule(s.router, ruleOptions)
+		rule, err := NewHeadlessRule(s.router, ruleOptions)
 		if err != nil {
 			return E.Cause(err, "parse rule_set.rules.[", i, "]")
 		}
+		rules[i] = rule
+		ruleCount += rule.RuleCount()
 	}
 	var metadata adapter.RuleSetMetadata
 	metadata.ContainsProcessRule = hasHeadlessRule(headlessRules, isProcessHeadlessRule)
 	metadata.ContainsWIFIRule = hasHeadlessRule(headlessRules, isWIFIHeadlessRule)
 	metadata.ContainsIPCIDRRule = hasHeadlessRule(headlessRules, isIPCIDRHeadlessRule)
+	s.ruleCount = ruleCount
+	metadata.LastUpdated = time.Now()
+	metadata.Format = s.metadata.Format
 	s.rules = rules
 	s.metadata = metadata
 	return nil
@@ -191,4 +206,8 @@ func (s *LocalRuleSet) Match(metadata *adapter.InboundContext) bool {
 		}
 	}
 	return false
+}
+
+func (s *LocalRuleSet) Update(ctx context.Context) error {
+	return nil
 }

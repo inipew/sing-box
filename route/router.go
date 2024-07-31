@@ -803,6 +803,10 @@ func (r *Router) RuleSet(tag string) (adapter.RuleSet, bool) {
 	return ruleSet, loaded
 }
 
+func (r *Router) RuleSets() []adapter.RuleSet {
+	return r.ruleSets
+}
+
 func (r *Router) NeedWIFIState() bool {
 	return r.needWIFIState
 }
@@ -1248,6 +1252,14 @@ func (r *Router) DefaultMark() uint32 {
 
 func (r *Router) Rules() []adapter.Rule {
 	return r.rules
+}
+
+func (r *Router) DNSRules() []adapter.DNSRule {
+	return r.dnsRules
+}
+
+func (r *Router) DefaultDNSServer() string {
+	return r.defaultTransport.Name()
 }
 
 func (r *Router) WIFIState() adapter.WIFIState {
