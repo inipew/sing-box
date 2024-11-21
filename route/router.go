@@ -21,7 +21,7 @@ import (
 	"github.com/sagernet/sing-box/option"
 	R "github.com/sagernet/sing-box/route/rule"
 	"github.com/sagernet/sing-box/transport/fakeip"
-	"github.com/sagernet/sing-dns"
+	dns "github.com/sagernet/sing-dns"
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
@@ -496,12 +496,24 @@ func (r *Router) RuleSet(tag string) (adapter.RuleSet, bool) {
 	return ruleSet, loaded
 }
 
+func (r *Router) RuleSets() []adapter.RuleSet {
+	return r.ruleSets
+}
+
 func (r *Router) NeedWIFIState() bool {
 	return r.needWIFIState
 }
 
 func (r *Router) Rules() []adapter.Rule {
 	return r.rules
+}
+
+func (r *Router) DNSRules() []adapter.DNSRule {
+	return r.dnsRules
+}
+
+func (r *Router) DefaultDNSServer() string {
+	return r.defaultTransport.Name()
 }
 
 func (r *Router) SetTracker(tracker adapter.ConnectionTracker) {

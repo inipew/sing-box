@@ -14,6 +14,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/srs"
 	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/atomic"
@@ -50,6 +51,7 @@ type RemoteRuleSet struct {
 	callbackAccess  sync.Mutex
 	callbacks       list.List[adapter.RuleSetUpdateCallback]
 	refs            atomic.Int32
+	ruleCount		uint64
 }
 
 func NewRemoteRuleSet(ctx context.Context, logger logger.ContextLogger, options option.RuleSet) *RemoteRuleSet {
@@ -73,6 +75,14 @@ func NewRemoteRuleSet(ctx context.Context, logger logger.ContextLogger, options 
 
 func (s *RemoteRuleSet) Name() string {
 	return s.options.Tag
+}
+
+func (s *RemoteRuleSet) Type() string {
+	return "remote"
+}
+
+func (s *RemoteRuleSet) RuleCount() uint64 {
+	return s.ruleCount
 }
 
 func (s *RemoteRuleSet) String() string {
@@ -118,7 +128,10 @@ func (s *RemoteRuleSet) PostStart() error {
 }
 
 func (s *RemoteRuleSet) Metadata() adapter.RuleSetMetadata {
-	return s.metadata
+	metadata := s.metadata
+	metadata.LastUpdated = s.lastUpdated
+	metadata.Format = s.options.Format
+	return metadata
 }
 
 func (s *RemoteRuleSet) ExtractIPSet() []*netipx.IPSet {
@@ -177,15 +190,20 @@ func (s *RemoteRuleSet) loadBytes(content []byte) error {
 		return err
 	}
 	rules := make([]adapter.HeadlessRule, len(plainRuleSet.Rules))
+	var ruleCount uint64
 	for i, ruleOptions := range plainRuleSet.Rules {
-		rules[i], err = NewHeadlessRule(s.ctx, ruleOptions)
+		rule, err := NewHeadlessRule(s.ctx, ruleOptions)
 		if err != nil {
 			return E.Cause(err, "parse rule_set.rules.[", i, "]")
 		}
+		rules[i] = rule
+		ruleCount += rule.RuleCount()
 	}
 	s.metadata.ContainsProcessRule = hasHeadlessRule(plainRuleSet.Rules, isProcessHeadlessRule)
 	s.metadata.ContainsWIFIRule = hasHeadlessRule(plainRuleSet.Rules, isWIFIHeadlessRule)
 	s.metadata.ContainsIPCIDRRule = hasHeadlessRule(plainRuleSet.Rules, isIPCIDRHeadlessRule)
+	s.ruleCount = ruleCount
+	s.lastUpdated = time.Now()
 	s.rules = rules
 	s.callbackAccess.Lock()
 	callbacks := s.callbacks.Array()
@@ -313,4 +331,14 @@ func (s *RemoteRuleSet) Match(metadata *adapter.InboundContext) bool {
 		}
 	}
 	return false
+}
+
+func (s *RemoteRuleSet) Update(ctx context.Context) error {
+	err := s.fetchOnce(log.ContextWithNewID(ctx), nil)
+	if err != nil {
+		return err
+	} else if s.refs.Load() == 0 {
+		s.rules = nil
+	}
+	return nil
 }
