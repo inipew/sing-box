@@ -6,10 +6,11 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/sagernet/sing-box/common/geoip"
 	C "github.com/sagernet/sing-box/constant"
-	"github.com/sagernet/sing-dns"
+	dns "github.com/sagernet/sing-dns"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/x/list"
@@ -31,12 +32,15 @@ type Router interface {
 	LoadGeosite(code string) (Rule, error)
 	RuleSet(tag string) (RuleSet, bool)
 	NeedWIFIState() bool
+	RuleSets() []RuleSet
 
 	Exchange(ctx context.Context, message *mdns.Msg) (*mdns.Msg, error)
 	Lookup(ctx context.Context, domain string, strategy dns.DomainStrategy) ([]netip.Addr, error)
 	LookupDefault(ctx context.Context, domain string) ([]netip.Addr, error)
 	ClearDNSCache()
 	Rules() []Rule
+	DNSRules() []DNSRule
+	DefaultDNSServer() string
 
 	SetTracker(tracker ConnectionTracker)
 
@@ -62,6 +66,8 @@ type ConnectionRouterEx interface {
 
 type RuleSet interface {
 	Name() string
+	Type() string
+	Update(ctx context.Context) error
 	StartContext(ctx context.Context, startContext *HTTPStartContext) error
 	PostStart() error
 	Metadata() RuleSetMetadata
@@ -81,6 +87,8 @@ type RuleSetMetadata struct {
 	ContainsProcessRule bool
 	ContainsWIFIRule    bool
 	ContainsIPCIDRRule  bool
+	LastUpdated         time.Time
+	Format              string
 }
 type HTTPStartContext struct {
 	access          sync.Mutex
