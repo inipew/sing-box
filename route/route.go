@@ -717,6 +717,14 @@ match:
 		var routeOptions *R.RuleActionRouteOptions
 		switch action := currentRule.Action().(type) {
 		case *R.RuleActionRoute:
+			if selectedOutbound, loaded := r.outbound.Outbound(action.Outbound); loaded {
+				if group, isGroup := selectedOutbound.(adapter.OutboundGroup); isGroup {
+					selectedOutbound = group.Selected(metadata.Network)
+				}
+				if selectedOutbound != nil && selectedOutbound.Type() == C.TypePass {
+					continue
+				}
+			}
 			routeOptions = &action.RuleActionRouteOptions
 		case *R.RuleActionRouteOptions:
 			routeOptions = action

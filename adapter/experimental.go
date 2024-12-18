@@ -173,3 +173,4 @@ type URLTestGroup interface {
 	URLTest(ctx context.Context) (map[string]uint16, error)
 	PerformUpdateCheck()
 }
+

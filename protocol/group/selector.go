@@ -127,6 +127,7 @@ func (s *Selector) References() []string {
 	return []string{selected.Tag()}
 }
 
+
 func (s *Selector) SelectPreMatchOutbound(metadata *adapter.InboundContext, selectOutbound func(adapter.Outbound) (adapter.Outbound, adapter.PreMatchAction)) (adapter.Outbound, adapter.PreMatchAction) {
 	return selectOutbound(s.selected.Load())
 }
