@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -40,39 +41,91 @@ func PeekStream(ctx context.Context, metadata *adapter.InboundContext, conn net.
 	}
 	deadline := time.Now().Add(timeout)
 	var errors []error
+
 	for i := 0; ; i++ {
-		err := conn.SetReadDeadline(deadline)
-		if err != nil {
+		// Set read deadline
+		if err := conn.SetReadDeadline(deadline); err != nil {
 			return E.Cause(err, "set read deadline")
 		}
-		_, err = buffer.ReadOnceFrom(conn)
-		_ = conn.SetReadDeadline(time.Time{})
+
+		// Read from connection
+		_, err := buffer.ReadOnceFrom(conn)
+		conn.SetReadDeadline(time.Time{}) // Reset deadline
+
 		if err != nil {
 			if i > 0 {
 				break
 			}
 			return E.Cause(err, "read payload")
 		}
-		errors = nil
+
+		// Konkurensi dengan WaitGroup untuk kontrol yang lebih baik
+		var wg sync.WaitGroup
+		errorsChan := make(chan error, len(sniffers))
+		fastClose, cancel := context.WithCancel(ctx)
+
 		for _, sniffer := range sniffers {
-			err = sniffer(ctx, metadata, bytes.NewReader(buffer.Bytes()))
+			wg.Add(1)
+			go func(sn StreamSniffer) {
+				defer wg.Done()
+				errorsChan <- sn(fastClose, metadata, bytes.NewReader(buffer.Bytes()))
+			}(sniffer)
+		}
+
+		// Tunggu goroutine selesai di background
+		go func() {
+			wg.Wait()
+			close(errorsChan)
+		}()
+
+		// Proses errors
+		for err := range errorsChan {
 			if err == nil {
+				cancel()
 				return nil
 			}
 			errors = append(errors, err)
 		}
+
+		cancel()
 	}
+
 	return E.Errors(errors...)
 }
 
 func PeekPacket(ctx context.Context, metadata *adapter.InboundContext, packet []byte, sniffers ...PacketSniffer) error {
-	var errors []error
+	var (
+		wg         sync.WaitGroup
+		errors     []error
+		errorsChan chan error
+	)
+
+	errorsChan = make(chan error, len(sniffers))
+	fastClose, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	for _, sniffer := range sniffers {
-		err := sniffer(ctx, metadata, packet)
+		wg.Add(1)
+		go func(sn PacketSniffer) {
+			defer wg.Done()
+			errorsChan <- sn(fastClose, metadata, packet)
+		}(sniffer)
+	}
+
+	// Tunggu goroutine selesai di background
+	go func() {
+		wg.Wait()
+		close(errorsChan)
+	}()
+
+	// Proses errors
+	for err := range errorsChan {
 		if err == nil {
+			cancel()
 			return nil
 		}
 		errors = append(errors, err)
 	}
+
 	return E.Errors(errors...)
 }
