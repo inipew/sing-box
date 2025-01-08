@@ -27,10 +27,10 @@ import (
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/outbound"
 	"github.com/sagernet/sing-box/transport/fakeip"
-	"github.com/sagernet/sing-dns"
-	"github.com/sagernet/sing-mux"
-	"github.com/sagernet/sing-tun"
-	"github.com/sagernet/sing-vmess"
+	dns "github.com/sagernet/sing-dns"
+	mux "github.com/sagernet/sing-mux"
+	tun "github.com/sagernet/sing-tun"
+	vmess "github.com/sagernet/sing-vmess"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -882,7 +882,7 @@ func (r *Router) RouteConnection(ctx context.Context, conn net.Conn, metadata ad
 			sniff.BitTorrent,
 		)
 		if err == nil {
-			if metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
+			if !metadata.Destination.IsFqdn() && metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
 				metadata.Destination = M.Socksaddr{
 					Fqdn: metadata.Domain,
 					Port: metadata.Destination.Port,
@@ -901,7 +901,7 @@ func (r *Router) RouteConnection(ctx context.Context, conn net.Conn, metadata ad
 		}
 	}
 
-	if r.dnsReverseMapping != nil && metadata.Domain == "" {
+	if r.dnsReverseMapping != nil {
 		domain, loaded := r.dnsReverseMapping.Query(metadata.Destination.Addr)
 		if loaded {
 			metadata.Domain = domain
@@ -1051,7 +1051,7 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 						continue
 					}
 					if metadata.Protocol != "" {
-						if metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
+						if !metadata.Destination.IsFqdn() && metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
 							metadata.Destination = M.Socksaddr{
 								Fqdn: metadata.Domain,
 								Port: metadata.Destination.Port,
@@ -1076,7 +1076,7 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 			break
 		}
 	}
-	if r.dnsReverseMapping != nil && metadata.Domain == "" {
+	if r.dnsReverseMapping != nil {
 		domain, loaded := r.dnsReverseMapping.Query(metadata.Destination.Addr)
 		if loaded {
 			metadata.Domain = domain
