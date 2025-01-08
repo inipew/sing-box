@@ -39,10 +39,12 @@ func NewDomainRegexItem(expressions []string) (*DomainRegexItem, error) {
 
 func (r *DomainRegexItem) Match(metadata *adapter.InboundContext) bool {
 	var domainHost string
-	if metadata.Domain != "" {
+	if metadata.Destination.IsFqdn() {
+		domainHost = metadata.Destination.Fqdn
+	} else if metadata.Domain != "" {
 		domainHost = metadata.Domain
 	} else {
-		domainHost = metadata.Destination.Fqdn
+		domainHost = metadata.Domain
 	}
 	if domainHost == "" {
 		return false
