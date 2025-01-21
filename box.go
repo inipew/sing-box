@@ -191,6 +191,8 @@ func New(options Options) (*Box, error) {
 	}
 	service.MustRegister[log.Factory](ctx, logFactory)
 
+	C.URLTestUnifiedDelay = experimentalOptions.URLTestUnifiedDelay
+
 	var internalServices []adapter.LifecycleService
 	if needCacheFile {
 		cacheFile := cachefile.New(ctx, logFactory.NewLogger("cache-file"), common.PtrValueOrDefault(experimentalOptions.CacheFile))
