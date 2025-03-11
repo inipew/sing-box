@@ -92,7 +92,7 @@ func TestURLTestSelectionKeepsCurrentWithinTolerance(t *testing.T) {
 		history:   history,
 		tolerance: 50,
 	}
-	group.selectedOutboundTCP = current
+	group.selectedOutboundTCP.Store(current)
 
 	selected, available := group.Select(N.NetworkTCP)
 	require.True(t, available)

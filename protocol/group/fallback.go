@@ -128,7 +128,7 @@ func (s *Fallback) DialContext(ctx context.Context, network string, destination 
 		outbound := candidates[0]
 		conn, err := outbound.DialContext(ctx, network, destination)
 		if err == nil {
-			return s.group.interruptGroup.NewConn(conn, interrupt.IsExternalConnectionFromContext(ctx)), nil
+			return s.group.interruptGroup.NewConn(conn, interrupt.IsExternalConnectionFromContext(ctx), interrupt.IsProviderConnectionFromContext(ctx)), nil
 		}
 		s.logger.ErrorContext(ctx, err)
 		s.group.history.DeleteURLTestHistory(RealTag(outbound, network))
@@ -139,7 +139,7 @@ func (s *Fallback) DialContext(ctx context.Context, network string, destination 
 		for _, outbound := range candidates {
 			conn, err := outbound.DialContext(ctx, network, destination)
 			if err == nil {
-				return s.group.interruptGroup.NewConn(conn, interrupt.IsExternalConnectionFromContext(ctx)), nil
+				return s.group.interruptGroup.NewConn(conn, interrupt.IsExternalConnectionFromContext(ctx), interrupt.IsProviderConnectionFromContext(ctx)), nil
 			}
 			if firstErr == nil {
 				firstErr = err
@@ -234,7 +234,7 @@ func (s *Fallback) DialContext(ctx context.Context, network string, destination 
 						}
 					}
 				}()
-				return s.group.interruptGroup.NewConn(res.conn, interrupt.IsExternalConnectionFromContext(ctx)), nil
+				return s.group.interruptGroup.NewConn(res.conn, interrupt.IsExternalConnectionFromContext(ctx), interrupt.IsProviderConnectionFromContext(ctx)), nil
 			}
 		}
 	}
@@ -256,7 +256,7 @@ func (s *Fallback) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 	for _, outbound := range candidates {
 		conn, err := outbound.ListenPacket(ctx, destination)
 		if err == nil {
-			return s.group.interruptGroup.NewPacketConn(conn, interrupt.IsExternalConnectionFromContext(ctx)), nil
+			return s.group.interruptGroup.NewPacketConn(conn, interrupt.IsExternalConnectionFromContext(ctx), interrupt.IsProviderConnectionFromContext(ctx)), nil
 		}
 		s.logger.ErrorContext(ctx, E.Cause(err, "listen packet fallback attempt for ", outbound.Tag()))
 		s.group.history.DeleteURLTestHistory(RealTag(outbound, N.NetworkUDP))

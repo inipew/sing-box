@@ -148,7 +148,7 @@ func (s *LoadBalance) DialContext(ctx context.Context, network string, destinati
 			Conn:    conn,
 			onClose: decrement,
 		}
-		return s.group.interruptGroup.NewConn(wrappedConn, interrupt.IsExternalConnectionFromContext(ctx)), nil
+		return s.group.interruptGroup.NewConn(wrappedConn, interrupt.IsExternalConnectionFromContext(ctx), interrupt.IsProviderConnectionFromContext(ctx)), nil
 	}
 	decrement()
 	s.logger.ErrorContext(ctx, err)
@@ -185,7 +185,7 @@ func (s *LoadBalance) ListenPacket(ctx context.Context, destination M.Socksaddr)
 			PacketConn: conn,
 			onClose:    decrement,
 		}
-		return s.group.interruptGroup.NewPacketConn(wrappedConn, interrupt.IsExternalConnectionFromContext(ctx)), nil
+		return s.group.interruptGroup.NewPacketConn(wrappedConn, interrupt.IsExternalConnectionFromContext(ctx), interrupt.IsProviderConnectionFromContext(ctx)), nil
 	}
 	decrement()
 	s.logger.ErrorContext(ctx, err)
