@@ -102,3 +102,37 @@ func validateRuleSetMetadataUpdate(ctx context.Context, tag string, metadata ada
 	}
 	return validator.ValidateRuleSetMetadataUpdate(tag, metadata)
 }
+
+func CountHeadlessRules(rules []option.HeadlessRule) uint64 {
+	var count uint64
+	for _, rule := range rules {
+		switch rule.Type {
+		case C.RuleTypeDefault, "":
+			r := rule.DefaultOptions
+			count += uint64(len(r.QueryType) +
+				len(r.Network) +
+				len(r.Domain) +
+				len(r.DomainSuffix) +
+				len(r.DomainKeyword) +
+				len(r.DomainRegex) +
+				len(r.SourceIPCIDR) +
+				len(r.IPCIDR) +
+				len(r.SourcePort) +
+				len(r.SourcePortRange) +
+				len(r.Port) +
+				len(r.PortRange) +
+				len(r.ProcessName) +
+				len(r.ProcessPath) +
+				len(r.ProcessPathRegex) +
+				len(r.PackageName) +
+				len(r.PackageNameRegex) +
+				len(r.NetworkType) +
+				len(r.WIFISSID) +
+				len(r.WIFIBSSID) +
+				len(r.AdGuardDomain))
+		case C.RuleTypeLogical:
+			count += CountHeadlessRules(rule.LogicalOptions.Rules)
+		}
+	}
+	return count
+}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/sagernet/fswatch"
 	"github.com/sagernet/sing-box/adapter"
@@ -36,6 +37,10 @@ type LocalRuleSet struct {
 	watcher    *fswatch.Watcher
 	callbacks  list.List[adapter.RuleSetUpdateCallback]
 	refs       atomic.Int32
+
+	lastUpdated time.Time
+	ruleSetType string
+	ruleCount   uint64
 }
 
 func NewLocalRuleSet(ctx context.Context, logger logger.Logger, tag string, options option.RuleSet) (*LocalRuleSet, error) {
@@ -44,6 +49,8 @@ func NewLocalRuleSet(ctx context.Context, logger logger.Logger, tag string, opti
 		logger:     logger,
 		tag:        tag,
 		fileFormat: options.Format,
+
+		ruleSetType: options.Type,
 	}
 	if options.Type == C.RuleSetTypeInline {
 		if len(options.InlineOptions.Rules) == 0 {
@@ -81,6 +88,28 @@ func (s *LocalRuleSet) Name() string {
 	return s.tag
 }
 
+func (s *LocalRuleSet) Format() string {
+	return s.fileFormat
+}
+
+func (s *LocalRuleSet) Type() string {
+	return s.ruleSetType
+}
+
+func (s *LocalRuleSet) RuleCount() uint64 {
+	s.access.RLock()
+	defer s.access.RUnlock()
+	return s.ruleCount
+}
+
+func (s *LocalRuleSet) UpdatedAt() time.Time {
+	return s.lastUpdated
+}
+
+func (s *LocalRuleSet) Update(ctx context.Context) error {
+	return nil
+}
+
 func (s *LocalRuleSet) String() string {
 	return strings.Join(F.MapToString(s.rules), " ")
 }
@@ -96,6 +125,11 @@ func (s *LocalRuleSet) StartContext(ctx context.Context, startContext *adapter.H
 }
 
 func (s *LocalRuleSet) reloadFile(path string) error {
+	fileInfo, err := filemanager.Stat(s.ctx, path)
+	if err != nil {
+		return err
+	}
+	s.lastUpdated = fileInfo.ModTime()
 	var ruleSet option.PlainRuleSetCompat
 	switch s.fileFormat {
 	case C.RuleSetFormatSource, "":
@@ -113,7 +147,7 @@ func (s *LocalRuleSet) reloadFile(path string) error {
 			return err
 		}
 		defer setFile.Close()
-		ruleSet, err = srs.Read(setFile, false)
+		ruleSet, err = srs.Read(setFile, true)
 		if err != nil {
 			return err
 		}
@@ -141,9 +175,14 @@ func (s *LocalRuleSet) reloadRules(headlessRules []option.HeadlessRule) error {
 	if err != nil {
 		return err
 	}
+	ruleCount := CountHeadlessRules(headlessRules)
+	if ruleCount == 0 {
+		ruleCount = uint64(len(headlessRules))
+	}
 	s.access.Lock()
 	s.rules = rules
 	s.metadata = metadata
+	s.ruleCount = ruleCount
 	callbacks := s.callbacks.Array()
 	s.access.Unlock()
 	for _, callback := range callbacks {

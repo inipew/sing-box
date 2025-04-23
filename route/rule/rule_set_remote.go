@@ -53,6 +53,7 @@ type RemoteRuleSet struct {
 	pauseManager   pause.Manager
 	callbacks      list.List[adapter.RuleSetUpdateCallback]
 	refs           atomic.Int32
+	ruleCount      uint64
 }
 
 func NewRemoteRuleSet(ctx context.Context, logger logger.ContextLogger, tag string, options option.RuleSet) (*RemoteRuleSet, error) {
@@ -86,6 +87,34 @@ func NewRemoteRuleSet(ctx context.Context, logger logger.ContextLogger, tag stri
 
 func (s *RemoteRuleSet) Name() string {
 	return s.tag
+}
+
+func (s *RemoteRuleSet) Format() string {
+	return s.options.Format
+}
+
+func (s *RemoteRuleSet) Type() string {
+	return C.RuleSetTypeRemote
+}
+
+func (s *RemoteRuleSet) RuleCount() uint64 {
+	s.access.RLock()
+	defer s.access.RUnlock()
+	return s.ruleCount
+}
+
+func (s *RemoteRuleSet) Update(ctx context.Context) error {
+	err := s.fetch(ctx, false)
+	if err != nil {
+		s.logger.Error("fetch rule-set ", s.options.Tag, ": ", err)
+	} else if s.refs.Load() == 0 {
+		s.rules = nil
+	}
+	return nil
+}
+
+func (s *RemoteRuleSet) UpdatedAt() time.Time {
+	return s.lastUpdated
 }
 
 func (s *RemoteRuleSet) String() string {
@@ -190,7 +219,7 @@ func (s *RemoteRuleSet) loadBytes(content []byte) error {
 			return err
 		}
 	case C.RuleSetFormatBinary:
-		ruleSet, err = srs.Read(bytes.NewReader(content), false)
+		ruleSet, err = srs.Read(bytes.NewReader(content), true)
 		if err != nil {
 			return err
 		}
@@ -213,9 +242,14 @@ func (s *RemoteRuleSet) loadBytes(content []byte) error {
 	if err != nil {
 		return err
 	}
+	ruleCount := CountHeadlessRules(plainRuleSet.Rules)
+	if ruleCount == 0 {
+		ruleCount = uint64(len(plainRuleSet.Rules))
+	}
 	s.access.Lock()
 	s.metadata = metadata
 	s.rules = rules
+	s.ruleCount = ruleCount
 	callbacks := s.callbacks.Array()
 	s.access.Unlock()
 	for _, callback := range callbacks {
