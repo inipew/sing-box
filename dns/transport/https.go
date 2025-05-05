@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"net"
@@ -51,6 +52,7 @@ type HTTPSTransport struct {
 	tlsConfig        tls.Config  // used for WithDialer cloning
 	dialer           N.Dialer
 	destination      *url.URL
+	method           string
 	headers          http.Header
 	fallback         *atomic.Bool
 	keepIdle         atomic.Bool
@@ -114,6 +116,7 @@ func NewHTTPS(ctx context.Context, logger log.ContextLogger, tag string, options
 		logger,
 		transportDialer,
 		&destinationURL,
+		options.Method,
 		headers,
 		serverAddr,
 		tlsConfig,
@@ -125,6 +128,7 @@ func NewHTTPSRaw(
 	logger log.ContextLogger,
 	rawDialer N.Dialer,
 	destination *url.URL,
+	method string,
 	headers http.Header,
 	serverAddr M.Socksaddr,
 	tlsConfig tls.Config,
@@ -146,6 +150,7 @@ func NewHTTPSRaw(
 		tlsConfig:        tlsConfig,
 		dialer:           actualDialer,
 		destination:      destination,
+		method:           method,
 		headers:          headers,
 		fallback:         fallback,
 		transport:        NewHTTPSTransportWrapper(actualDialer, serverAddr, fallback),
@@ -200,7 +205,7 @@ func (t *HTTPSTransport) RawDialer() N.Dialer {
 // WithDialer returns a clone of this transport using the given dialer.
 // Used by GroupTransport to apply group-level detour override.
 func (t *HTTPSTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
-	return NewHTTPSRaw(t.TransportAdapter, t.logger, d, t.destination, t.headers, t.serverAddr, t.tlsConfig)
+	return NewHTTPSRaw(t.TransportAdapter, t.logger, d, t.destination, t.method, t.headers, t.serverAddr, t.tlsConfig)
 }
 
 func (t *HTTPSTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
@@ -239,13 +244,26 @@ func (t *HTTPSTransport) exchange(ctx context.Context, message *mDNS.Msg) (*mDNS
 		requestBuffer.Release()
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, t.destination.String(), bytes.NewReader(rawMessage))
+	destination := *t.destination
+	var request *http.Request
+	var body io.Reader
+	switch t.method {
+	case http.MethodGet:
+		query := url.Values{}
+		query.Set("dns", base64.RawURLEncoding.EncodeToString(rawMessage))
+		destination.RawQuery = query.Encode()
+	case http.MethodPost:
+		body = bytes.NewReader(rawMessage)
+	}
+	request, err = http.NewRequestWithContext(ctx, t.method, destination.String(), body)
 	if err != nil {
 		requestBuffer.Release()
 		return nil, err
 	}
 	request.Header = t.headers.Clone()
-	request.Header.Set("Content-Type", MimeType)
+	if t.method == http.MethodPost {
+		request.Header.Set("Content-Type", MimeType)
+	}
 	request.Header.Set("Accept", MimeType)
 	t.transportAccess.Lock()
 	currentTransport := t.transport

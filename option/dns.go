@@ -2,6 +2,7 @@ package option
 
 import (
 	"context"
+	"net/http"
 	"net/netip"
 	"reflect"
 
@@ -247,13 +248,38 @@ type RemoteTLSDNSServerOptions struct {
 	OutboundTLSOptionsContainer
 }
 
-type RemoteHTTPSDNSServerOptions struct {
+type _RemoteHTTPSDNSServerOptions struct {
 	RemoteTLSDNSServerOptions
 	Path    string               `json:"path,omitempty"`
 	Method  string               `json:"method,omitempty"`
 	Headers badoption.HTTPHeader `json:"headers,omitempty"`
 }
 
+type RemoteHTTPSDNSServerOptions _RemoteHTTPSDNSServerOptions
+
+func (o *RemoteHTTPSDNSServerOptions) MarshalJSONContext(ctx context.Context) ([]byte, error) {
+	switch o.Method {
+	case http.MethodPost:
+		o.Method = ""
+	}
+	return badjson.MarshallObjectsContext(ctx, (*_RemoteHTTPSDNSServerOptions)(o))
+}
+
+func (o *RemoteHTTPSDNSServerOptions) UnmarshalJSONContext(ctx context.Context, content []byte) error {
+	err := json.UnmarshalContext(ctx, content, (*_RemoteHTTPSDNSServerOptions)(o))
+	if err != nil {
+		return err
+	}
+	switch o.Method {
+	case "", http.MethodPost:
+		o.Method = http.MethodPost
+	case http.MethodGet:
+		o.Method = http.MethodGet
+	default:
+		return E.New("unsupported method")
+	}
+	return nil
+}
 type FakeIPDNSServerOptions struct {
 	Inet4Range *badoption.Prefix `json:"inet4_range,omitempty" examples:"198.18.0.0/15"`
 	Inet6Range *badoption.Prefix `json:"inet6_range,omitempty" examples:"fc00::/18"`
