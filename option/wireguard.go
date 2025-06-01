@@ -29,6 +29,24 @@ type WireGuardPeer struct {
 	Reserved                    []uint8                          `json:"reserved,omitempty"`
 }
 
+type WireGuardWARPEndpointOptions struct {
+	System     bool                        `json:"system,omitempty"`
+	Name       string                      `json:"name,omitempty"`
+	ListenPort uint16                      `json:"listen_port,omitempty"`
+	UDPTimeout badoption.Duration          `json:"udp_timeout,omitempty"`
+	Workers    int                         `json:"workers,omitempty"`
+	Profile    *WireGuardCloudflareProfile `json:"profile,omitempty"`
+	DialerOptions
+}
+
+type WireGuardCloudflareProfile struct {
+	ID         string `json:"id,omitempty"`
+	PrivateKey string `json:"private_key,omitempty"`
+	AuthToken  string `json:"auth_token,omitempty"`
+	Recreate   bool   `json:"recreate,omitempty"`
+	Detour     string `json:"detour,omitempty"`
+}
+
 type LegacyWireGuardOutboundOptions struct {
 	DialerOptions
 	SystemInterface bool                             `json:"system_interface,omitempty"`
