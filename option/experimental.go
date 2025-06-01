@@ -10,12 +10,13 @@ type ExperimentalOptions struct {
 }
 
 type CacheFileOptions struct {
-	Enabled     bool               `json:"enabled,omitempty"`
-	Path        string             `json:"path,omitempty"`
-	CacheID     string             `json:"cache_id,omitempty"`
-	StoreFakeIP bool               `json:"store_fakeip,omitempty"`
-	StoreRDRC   bool               `json:"store_rdrc,omitempty"`
-	RDRCTimeout badoption.Duration `json:"rdrc_timeout,omitempty"`
+	Enabled         bool               `json:"enabled,omitempty"`
+	Path            string             `json:"path,omitempty"`
+	CacheID         string             `json:"cache_id,omitempty"`
+	StoreFakeIP     bool               `json:"store_fakeip,omitempty"`
+	StoreRDRC       bool               `json:"store_rdrc,omitempty"`
+	StoreWARPConfig bool               `json:"store_warp_config,omitempty"`
+	RDRCTimeout     badoption.Duration `json:"rdrc_timeout,omitempty"`
 }
 
 type ClashAPIOptions struct {

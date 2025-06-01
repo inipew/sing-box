@@ -44,6 +44,8 @@ type CacheFile interface {
 	StoreRDRC() bool
 	RDRCStore
 
+	StoreWARPConfig() bool
+
 	LoadMode() string
 	StoreMode(mode string) error
 	LoadSelected(group string) string
@@ -52,6 +54,8 @@ type CacheFile interface {
 	StoreGroupExpand(group string, expand bool) error
 	LoadRuleSet(tag string) *SavedBinary
 	SaveRuleSet(tag string, set *SavedBinary) error
+	LoadWARPConfig(tag string) *SavedBinary
+	SaveWARPConfig(tag string, set *SavedBinary) error
 }
 
 type SavedBinary struct {
