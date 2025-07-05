@@ -89,6 +89,7 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 		request.Header.Del("Host")
 		request.Host = host
 	}
+	request = request.WithContext(ctx)
 	err = request.Write(conn)
 	if err != nil {
 		return nil, err
