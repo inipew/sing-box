@@ -1,0 +1,5 @@
+pyrofork>=2.3.41
+tgcrypto>=1.2.5
+rich>=13.9.4
+cryptg>=0.4.0
+uvloop>=0.19.0; sys_platform != "win32"
