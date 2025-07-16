@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sagernet/fswatch"
@@ -20,6 +21,7 @@ import (
 var errInsecureUnused = E.New("tls: insecure unused")
 
 type STDServerConfig struct {
+	access          sync.RWMutex
 	config          *tls.Config
 	logger          log.Logger
 	acmeService     adapter.SimpleLifecycle
@@ -31,45 +33,70 @@ type STDServerConfig struct {
 	watcher         *fswatch.Watcher
 }
 
+func (c *STDServerConfig) getConfig() *tls.Config {
+	c.access.RLock()
+	cfg := c.config
+	c.access.RUnlock()
+	return cfg
+}
+
+func (c *STDServerConfig) updateConfig(update func(*tls.Config) error) error {
+	c.access.Lock()
+	cfg := c.config.Clone()
+	err := update(cfg)
+	if err == nil {
+		c.config = cfg
+	}
+	c.access.Unlock()
+	return err
+}
+
 func (c *STDServerConfig) ServerName() string {
-	return c.config.ServerName
+	return c.getConfig().ServerName
 }
 
 func (c *STDServerConfig) SetServerName(serverName string) {
-	c.config.ServerName = serverName
+	_ = c.updateConfig(func(cfg *tls.Config) error {
+		cfg.ServerName = serverName
+		return nil
+	})
 }
 
 func (c *STDServerConfig) NextProtos() []string {
-	if c.acmeService != nil && len(c.config.NextProtos) > 1 && c.config.NextProtos[0] == ACMETLS1Protocol {
-		return c.config.NextProtos[1:]
+	cfg := c.getConfig()
+	if c.acmeService != nil && len(cfg.NextProtos) > 1 && cfg.NextProtos[0] == ACMETLS1Protocol {
+		return cfg.NextProtos[1:]
 	} else {
-		return c.config.NextProtos
+		return cfg.NextProtos
 	}
 }
 
 func (c *STDServerConfig) SetNextProtos(nextProto []string) {
-	if c.acmeService != nil && len(c.config.NextProtos) > 1 && c.config.NextProtos[0] == ACMETLS1Protocol {
-		c.config.NextProtos = append(c.config.NextProtos[:1], nextProto...)
-	} else {
-		c.config.NextProtos = nextProto
-	}
+	_ = c.updateConfig(func(cfg *tls.Config) error {
+		if c.acmeService != nil && len(cfg.NextProtos) > 1 && cfg.NextProtos[0] == ACMETLS1Protocol {
+			cfg.NextProtos = append(cfg.NextProtos[:1], nextProto...)
+		} else {
+			cfg.NextProtos = nextProto
+		}
+		return nil
+	})
 }
 
 func (c *STDServerConfig) Config() (*STDConfig, error) {
-	return c.config, nil
+	return c.getConfig(), nil
 }
 
 func (c *STDServerConfig) Client(conn net.Conn) (Conn, error) {
-	return tls.Client(conn, c.config), nil
+	return tls.Client(conn, c.getConfig()), nil
 }
 
 func (c *STDServerConfig) Server(conn net.Conn) (Conn, error) {
-	return tls.Server(conn, c.config), nil
+	return tls.Server(conn, c.getConfig()), nil
 }
 
 func (c *STDServerConfig) Clone() Config {
 	return &STDServerConfig{
-		config: c.config.Clone(),
+		config: c.getConfig().Clone(),
 	}
 }
 
@@ -138,10 +165,18 @@ func (c *STDServerConfig) certificateUpdated(path string) error {
 		if err != nil {
 			return E.Cause(err, "reload key pair")
 		}
-		c.config.Certificates = []tls.Certificate{keyPair}
+		err = c.updateConfig(func(cfg *tls.Config) error {
+			cfg.Certificates = []tls.Certificate{keyPair}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
 		c.logger.Info("reloaded TLS certificate")
 	} else if path == c.echKeyPath {
-		err := reloadECHKeys(c.echKeyPath, c.config)
+		err := c.updateConfig(func(cfg *tls.Config) error {
+			return reloadECHKeys(c.echKeyPath, cfg)
+		})
 		if err != nil {
 			return err
 		}
