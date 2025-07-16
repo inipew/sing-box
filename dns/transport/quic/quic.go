@@ -37,7 +37,7 @@ type Transport struct {
 	dialer     N.Dialer
 	serverAddr M.Socksaddr
 	tlsConfig  tls.Config
-	access     sync.Mutex
+	access     sync.RWMutex
 	connection quic.EarlyConnection
 }
 
@@ -78,8 +78,9 @@ func (t *Transport) Start(stage adapter.StartStage) error {
 
 func (t *Transport) Close() error {
 	t.access.Lock()
-	defer t.access.Unlock()
 	connection := t.connection
+	t.connection = nil
+	t.access.Unlock()
 	if connection != nil {
 		connection.CloseWithError(0, "")
 	}
@@ -111,18 +112,21 @@ func (t *Transport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg,
 }
 
 func (t *Transport) openConnection() (quic.EarlyConnection, error) {
+	t.access.RLock()
 	connection := t.connection
+	t.access.RUnlock()
 	if connection != nil && !common.Done(connection.Context()) {
 		return connection, nil
 	}
 	t.access.Lock()
-	defer t.access.Unlock()
 	connection = t.connection
 	if connection != nil && !common.Done(connection.Context()) {
+		t.access.Unlock()
 		return connection, nil
 	}
 	conn, err := t.dialer.DialContext(t.ctx, N.NetworkUDP, t.serverAddr)
 	if err != nil {
+		t.access.Unlock()
 		return nil, err
 	}
 	earlyConnection, err := sQUIC.DialEarly(
@@ -133,9 +137,11 @@ func (t *Transport) openConnection() (quic.EarlyConnection, error) {
 		nil,
 	)
 	if err != nil {
+		t.access.Unlock()
 		return nil, err
 	}
 	t.connection = earlyConnection
+	t.access.Unlock()
 	return earlyConnection, nil
 }
 

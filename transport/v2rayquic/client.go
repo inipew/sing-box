@@ -28,7 +28,7 @@ type Client struct {
 	serverAddr M.Socksaddr
 	tlsConfig  tls.Config
 	quicConfig *quic.Config
-	connAccess sync.Mutex
+	connAccess sync.RWMutex
 	conn       quic.Connection
 	rawConn    net.Conn
 }
@@ -49,8 +49,15 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
 	}, nil
 }
 
-func (c *Client) offer() (quic.Connection, error) {
+func (c *Client) getConn() quic.Connection {
+	c.connAccess.RLock()
 	conn := c.conn
+	c.connAccess.RUnlock()
+	return conn
+}
+
+func (c *Client) offer() (quic.Connection, error) {
+	conn := c.getConn()
 	if conn != nil && !common.Done(conn.Context()) {
 		return conn, nil
 	}
