@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/sagernet/fswatch"
 	"github.com/sagernet/sing-box/adapter"
@@ -21,6 +22,7 @@ import (
 var _ adapter.CertificateStore = (*Store)(nil)
 
 type Store struct {
+	access                    sync.RWMutex
 	systemPool                *x509.CertPool
 	currentPool               *x509.CertPool
 	certificate               string
@@ -88,6 +90,9 @@ func NewStore(ctx context.Context, logger logger.Logger, options option.Certific
 	}
 	err := store.update()
 	if err != nil {
+		if store.watcher != nil {
+			_ = store.watcher.Close()
+		}
 		return nil, E.Cause(err, "initializing certificate store")
 	}
 	return store, nil
@@ -102,7 +107,10 @@ func (s *Store) Start(stage adapter.StartStage) error {
 		return nil
 	}
 	if s.watcher != nil {
-		return s.watcher.Start()
+		if err := s.watcher.Start(); err != nil {
+			_ = s.watcher.Close()
+			return err
+		}
 	}
 	return nil
 }
@@ -115,10 +123,15 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Pool() *x509.CertPool {
-	return s.currentPool
+	s.access.RLock()
+	pool := s.currentPool
+	s.access.RUnlock()
+	return pool
 }
 
 func (s *Store) update() error {
+	s.access.Lock()
+	defer s.access.Unlock()
 	var currentPool *x509.CertPool
 	if s.systemPool == nil {
 		currentPool = x509.NewCertPool()
