@@ -11,7 +11,7 @@ on:
         description: "Go build tags"
         required: false
         type: string
-        default: with_gvisor,with_dhcp,with_wireguard,with_clash_api,with_quic,with_utls,badlinkname,tfogo_checklinkname0
+        default: with_gvisor,with_dhcp,with_wireguard,with_clash_api,with_quic,with_utls,with_warp,badlinkname,tfogo_checklinkname0
 
       build_android_arm:
         description: "Android ARM (armeabi-v7a)"
@@ -69,7 +69,7 @@ concurrency:
 env:
   GO_VERSION: '1.25.1'
   NDK_VERSION: 'r29-beta4'
-  BUILD_TAGS: ${{ github.event_name == 'workflow_dispatch' && inputs.build_tags != '' && inputs.build_tags || 'with_gvisor,with_dhcp,with_wireguard,with_clash_api,with_quic,with_utls,badlinkname,tfogo_checklinkname0' }}
+  BUILD_TAGS: ${{ github.event_name == 'workflow_dispatch' && inputs.build_tags != '' && inputs.build_tags || 'with_gvisor,with_dhcp,with_wireguard,with_clash_api,with_quic,with_utls,with_warp,badlinkname,tfogo_checklinkname0' }}
   GOPROXY: https://proxy.golang.org,direct
   GOSUMDB: sum.golang.org
 
@@ -503,7 +503,7 @@ jobs:
           echo "::group::Preparing upload data"
           
           # Get commit information
-          export COMMIT=$(git log --pretty=format:"%h %an %s" | grep -vE "yelnoo|yaotthaha|lux5am|inipew|reF1nd|Nova" | sed 's/^\([^ ]*\) [^ ]* /`\1` — /' | head -n 10)
+          export COMMIT=$(git log --pretty=format:"%h %an %s" | grep -vE "yelnoo|yaotthaha|lux5am|inipew|reF1nd|Nova|Sergei Maklagin" | sed 's/^\([^ ]*\) [^ ]* /`\1` — /' | head -n 10)
           export CHERRY_PICK_COMMIT=$(git log --pretty=format:"%h %an %s" --committer="inipew" | sed 's/^\([^ ]*\) [^ ]* /`\1` — /')
           
           # Find files to upload

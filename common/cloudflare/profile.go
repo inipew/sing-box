@@ -1,3 +1,5 @@
+//go:build with_warp
+
 package cloudflare
 
 import "time"
