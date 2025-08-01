@@ -14,5 +14,5 @@ func registerWireGuardOutbound(registry *outbound.Registry) {
 
 func registerWireGuardEndpoint(registry *endpoint.Registry) {
 	wireguard.RegisterEndpoint(registry)
-	wireguard.RegisterWARPEndpoint(registry)
+	registerWARPEndpoint(registry)
 }
