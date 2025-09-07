@@ -11802,6 +11802,9 @@
             },
             "fallback_delay": {
               "$ref": "#/$defs/Duration"
+            },
+            "direct_domain_strategy": {
+              "$ref": "#/$defs/DomainStrategy"
             }
           },
           "required": [
