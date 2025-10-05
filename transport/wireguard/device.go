@@ -33,6 +33,7 @@ type DeviceOptions struct {
 	MTU            uint32
 	Address        []netip.Prefix
 	AllowedAddress []netip.Prefix
+	RouteExclude   []netip.Addr
 }
 
 func NewDevice(options DeviceOptions) (Device, error) {

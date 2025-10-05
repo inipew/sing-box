@@ -114,6 +114,7 @@ func NewEndpoint(options EndpointOptions) (*Endpoint, error) {
 		MTU:            options.MTU,
 		Address:        options.Address,
 		AllowedAddress: allowedAddresses,
+		RouteExclude:   options.RouteExclude,
 	}
 	tunDevice, err := NewDevice(deviceOptions)
 	if err != nil {

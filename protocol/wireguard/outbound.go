@@ -83,6 +83,12 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			Reserved:     options.Reserved,
 		}}
 	}
+	var routeExclude []netip.Addr
+	for _, peer := range peers {
+		if peer.Endpoint.Addr.IsValid() {
+			routeExclude = append(routeExclude, peer.Endpoint.Addr)
+		}
+	}
 	wgEndpoint, err := wireguard.NewEndpoint(wireguard.EndpointOptions{
 		Context: ctx,
 		Logger:  logger,
@@ -93,10 +99,11 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 				BindInterface: interfaceName,
 			}))
 		},
-		Name:       options.InterfaceName,
-		MTU:        options.MTU,
-		Address:    options.LocalAddress,
-		PrivateKey: options.PrivateKey,
+		Name:         options.InterfaceName,
+		MTU:          options.MTU,
+		Address:      options.LocalAddress,
+		RouteExclude: routeExclude,
+		PrivateKey:   options.PrivateKey,
 		ResolvePeer: func(domain string) (netip.Addr, error) {
 			endpointAddresses, lookupErr := outbound.dnsRouter.Lookup(ctx, domain, outboundDialer.(dialer.ResolveDialer).QueryOptions())
 			if lookupErr != nil {
