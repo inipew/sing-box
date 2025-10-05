@@ -22,6 +22,10 @@ type Device interface {
 	Inet6Address() netip.Addr
 }
 
+type RouteExcludeUpdater interface {
+	AddRouteExclude(addr netip.Addr) error
+}
+
 type DeviceOptions struct {
 	Context        context.Context
 	Logger         logger.ContextLogger
@@ -33,6 +37,7 @@ type DeviceOptions struct {
 	MTU            uint32
 	Address        []netip.Prefix
 	AllowedAddress []netip.Prefix
+	RouteExclude   []netip.Addr
 }
 
 func NewDevice(options DeviceOptions) (Device, error) {

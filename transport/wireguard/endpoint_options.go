@@ -22,6 +22,7 @@ type EndpointOptions struct {
 	Name         string
 	MTU          uint32
 	Address      []netip.Prefix
+	RouteExclude []netip.Addr
 	PrivateKey   string
 	ListenPort   uint16
 	ResolvePeer  func(domain string) (netip.Addr, error)

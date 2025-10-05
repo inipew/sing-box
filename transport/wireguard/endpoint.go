@@ -114,6 +114,7 @@ func NewEndpoint(options EndpointOptions) (*Endpoint, error) {
 		MTU:            options.MTU,
 		Address:        options.Address,
 		AllowedAddress: allowedAddresses,
+		RouteExclude:   options.RouteExclude,
 	}
 	tunDevice, err := NewDevice(deviceOptions)
 	if err != nil {
@@ -149,6 +150,7 @@ func (e *Endpoint) Start(resolve bool) error {
 				return E.Cause(err, "resolve endpoint domain for peer[", peerIndex, "]: ", peer.destination)
 			}
 			e.peers[peerIndex].endpoint = netip.AddrPortFrom(destinationAddress, peer.destination.Port)
+			e.addRouteExclude(destinationAddress)
 		}
 	} else if resolve {
 		return nil
@@ -236,6 +238,16 @@ func (e *Endpoint) Close() error {
 		e.pause.UnregisterCallback(e.pauseCallback)
 	}
 	return nil
+}
+
+func (e *Endpoint) addRouteExclude(addr netip.Addr) {
+	updater, hasUpdater := e.tunDevice.(RouteExcludeUpdater)
+	if !hasUpdater || !addr.IsValid() {
+		return
+	}
+	if err := updater.AddRouteExclude(addr); err != nil {
+		e.options.Logger.Warn(E.Cause(err, "update route exclude for ", addr))
+	}
 }
 
 func (e *Endpoint) Lookup(address netip.Addr) *device.Peer {

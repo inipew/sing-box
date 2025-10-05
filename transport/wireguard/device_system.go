@@ -20,16 +20,21 @@ import (
 )
 
 var _ Device = (*systemDevice)(nil)
+var _ RouteExcludeUpdater = (*systemDevice)(nil)
 
 type systemDevice struct {
-	options      DeviceOptions
-	dialer       N.Dialer
-	device       tun.Tun
-	batchDevice  tun.LinuxTUN
-	events       chan wgTun.Event
-	closeOnce    sync.Once
-	inet4Address netip.Addr
-	inet6Address netip.Addr
+	options           DeviceOptions
+	dialer            N.Dialer
+	device            tun.Tun
+	batchDevice       tun.LinuxTUN
+	events            chan wgTun.Event
+	closeOnce         sync.Once
+	inet4Address      netip.Addr
+	inet6Address      netip.Addr
+	inet4RouteExclude []netip.Prefix
+	inet6RouteExclude []netip.Prefix
+	routeExcludeLock  sync.Mutex
+	tunOptions        tun.Options
 }
 
 func newSystemDevice(options DeviceOptions) (*systemDevice, error) {
@@ -38,6 +43,8 @@ func newSystemDevice(options DeviceOptions) (*systemDevice, error) {
 	}
 	var inet4Address netip.Addr
 	var inet6Address netip.Addr
+	var inet4RouteExclude []netip.Prefix
+	var inet6RouteExclude []netip.Prefix
 	if len(options.Address) > 0 {
 		if prefix := common.Find(options.Address, func(it netip.Prefix) bool {
 			return it.Addr().Is4()
@@ -52,12 +59,24 @@ func newSystemDevice(options DeviceOptions) (*systemDevice, error) {
 			inet6Address = prefix.Addr()
 		}
 	}
+	for _, addr := range options.RouteExclude {
+		if !addr.IsValid() {
+			continue
+		}
+		if addr.Is4() {
+			inet4RouteExclude = append(inet4RouteExclude, netip.PrefixFrom(addr, 32))
+		} else if addr.Is6() {
+			inet6RouteExclude = append(inet6RouteExclude, netip.PrefixFrom(addr, 128))
+		}
+	}
 	return &systemDevice{
-		options:      options,
-		dialer:       options.CreateDialer(options.Name),
-		events:       make(chan wgTun.Event, 1),
-		inet4Address: inet4Address,
-		inet6Address: inet6Address,
+		options:           options,
+		dialer:            options.CreateDialer(options.Name),
+		events:            make(chan wgTun.Event, 1),
+		inet4Address:      inet4Address,
+		inet6Address:      inet6Address,
+		inet4RouteExclude: inet4RouteExclude,
+		inet6RouteExclude: inet6RouteExclude,
 	}, nil
 }
 
@@ -96,15 +115,20 @@ func (w *systemDevice) Start() error {
 		Inet4RouteAddress: common.Filter(w.options.AllowedAddress, func(it netip.Prefix) bool {
 			return it.Addr().Is4()
 		}),
-		Inet6RouteAddress: common.Filter(w.options.AllowedAddress, func(it netip.Prefix) bool { return it.Addr().Is6() }),
-		InterfaceMonitor:  networkManager.InterfaceMonitor(),
-		InterfaceFinder:   networkManager.InterfaceFinder(),
-		Logger:            w.options.Logger,
+		Inet6RouteAddress:        common.Filter(w.options.AllowedAddress, func(it netip.Prefix) bool { return it.Addr().Is6() }),
+		Inet4RouteExcludeAddress: w.inet4RouteExclude,
+		Inet6RouteExcludeAddress: w.inet6RouteExclude,
+		InterfaceMonitor:         networkManager.InterfaceMonitor(),
+		InterfaceFinder:          networkManager.InterfaceFinder(),
+		Logger:                   w.options.Logger,
 	}
 	// works with Linux, macOS with IFSCOPE routes, not tested on Windows
 	if runtime.GOOS == "darwin" {
 		tunOptions.AutoRoute = true
 	}
+	w.routeExcludeLock.Lock()
+	w.tunOptions = tunOptions
+	w.routeExcludeLock.Unlock()
 	tunInterface, err := tun.New(tunOptions)
 	if err != nil {
 		return err
@@ -179,6 +203,39 @@ func (w *systemDevice) Events() <-chan wgTun.Event {
 func (w *systemDevice) Close() error {
 	close(w.events)
 	return w.device.Close()
+}
+
+func (w *systemDevice) AddRouteExclude(addr netip.Addr) error {
+	if !addr.IsValid() {
+		return nil
+	}
+	var (
+		prefix  netip.Prefix
+		changed bool
+	)
+	w.routeExcludeLock.Lock()
+	defer w.routeExcludeLock.Unlock()
+	if addr.Is4() {
+		prefix = netip.PrefixFrom(addr, 32)
+		if common.Contains(w.inet4RouteExclude, prefix) {
+			return nil
+		}
+		w.inet4RouteExclude = append(w.inet4RouteExclude, prefix)
+		w.tunOptions.Inet4RouteExcludeAddress = append([]netip.Prefix(nil), w.inet4RouteExclude...)
+		changed = true
+	} else if addr.Is6() {
+		prefix = netip.PrefixFrom(addr, 128)
+		if common.Contains(w.inet6RouteExclude, prefix) {
+			return nil
+		}
+		w.inet6RouteExclude = append(w.inet6RouteExclude, prefix)
+		w.tunOptions.Inet6RouteExcludeAddress = append([]netip.Prefix(nil), w.inet6RouteExclude...)
+		changed = true
+	}
+	if !changed || w.device == nil {
+		return nil
+	}
+	return w.device.UpdateRouteOptions(w.tunOptions)
 }
 
 func (w *systemDevice) BatchSize() int {
