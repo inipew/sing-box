@@ -39,6 +39,10 @@ func (r *ruleListTestRouter) Rules() []adapter.Rule {
 	return r.rules
 }
 
+func (r *ruleListTestRouter) Rule(uuid string) (adapter.Rule, bool) {
+	return nil, false
+}
+
 type ruleListTestDNSRouter struct {
 	rules []adapter.RuleInfo
 }
@@ -64,6 +68,14 @@ func (r *ruleListTestRule) String() string {
 
 func (r *ruleListTestRule) Action() adapter.RuleAction {
 	return ruleListTestAction(r.action)
+}
+
+func (r *ruleListTestRule) Disabled() bool {
+	return false
+}
+
+func (r *ruleListTestRule) UUID() string {
+	return ""
 }
 
 type ruleListTestAction string
