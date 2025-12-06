@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
@@ -13,8 +14,6 @@ import (
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
-	E "github.com/sagernet/sing/common/exceptions"
-	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 
 	mDNS "github.com/miekg/dns"
@@ -28,8 +27,8 @@ func RegisterTCP(registry *dns.TransportRegistry) {
 
 type TCPTransport struct {
 	dns.TransportAdapter
-	dialer     N.Dialer
-	serverAddr M.Socksaddr
+	dialer    N.Dialer
+	upstreams *dns.UpstreamSelector
 }
 
 func NewTCP(ctx context.Context, logger log.ContextLogger, tag string, options option.RemoteDNSServerOptions) (adapter.DNSTransport, error) {
@@ -37,17 +36,14 @@ func NewTCP(ctx context.Context, logger log.ContextLogger, tag string, options o
 	if err != nil {
 		return nil, err
 	}
-	serverAddr := options.DNSServerAddressOptions.Build()
-	if serverAddr.Port == 0 {
-		serverAddr.Port = 53
-	}
-	if !serverAddr.IsValid() {
-		return nil, E.New("invalid server address: ", serverAddr)
+	upstreams, err := dns.BuildUpstreamSelector(options, 53)
+	if err != nil {
+		return nil, err
 	}
 	return &TCPTransport{
 		TransportAdapter: dns.NewTransportAdapterWithRemoteOptions(C.DNSTypeTCP, tag, options),
 		dialer:           transportDialer,
-		serverAddr:       serverAddr,
+		upstreams:        upstreams,
 	}, nil
 }
 
@@ -63,7 +59,8 @@ func (t *TCPTransport) Close() error {
 }
 
 func (t *TCPTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
-	conn, err := t.dialer.DialContext(ctx, N.NetworkTCP, t.serverAddr)
+	start := time.Now()
+	conn, serverAddr, err := dns.DialContextWithUpstreams(ctx, t.dialer, N.NetworkTCP, t.upstreams)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +69,11 @@ func (t *TCPTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.M
 	if err != nil {
 		return nil, err
 	}
-	return ReadMessage(conn)
+	response, err := ReadMessage(conn)
+	if err == nil {
+		t.upstreams.Record(serverAddr, time.Since(start))
+	}
+	return response, err
 }
 
 func ReadMessage(reader io.Reader) (*mDNS.Msg, error) {

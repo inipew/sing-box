@@ -6,10 +6,11 @@ import (
 	"net"
 	"net/http"
 	"sync/atomic"
+	"time"
 
 	"github.com/sagernet/sing-box/common/tls"
+	"github.com/sagernet/sing-box/dns"
 	E "github.com/sagernet/sing/common/exceptions"
-	M "github.com/sagernet/sing/common/metadata"
 
 	"golang.org/x/net/http2"
 )
@@ -22,27 +23,34 @@ type HTTPSTransportWrapper struct {
 	fallback       *atomic.Bool
 }
 
-func NewHTTPSTransportWrapper(dialer tls.Dialer, serverAddr M.Socksaddr) *HTTPSTransportWrapper {
+func NewHTTPSTransportWrapper(dialer tls.Dialer, upstreams *dns.UpstreamSelector) *HTTPSTransportWrapper {
 	var fallback atomic.Bool
 	return &HTTPSTransportWrapper{
 		http2Transport: &http2.Transport{
 			DialTLSContext: func(ctx context.Context, _, _ string, _ *tls.STDConfig) (net.Conn, error) {
-				tlsConn, err := dialer.DialTLSContext(ctx, serverAddr)
+				start := time.Now()
+				conn, serverAddr, err := dns.DialTLSWithUpstreams(ctx, tlsDialerWrapper{dialer}, upstreams)
 				if err != nil {
 					return nil, err
 				}
-				state := tlsConn.ConnectionState()
+				state := conn.ConnectionState()
 				if state.NegotiatedProtocol == http2.NextProtoTLS {
-					return tlsConn, nil
+					upstreams.Record(serverAddr, time.Since(start))
+					return conn, nil
 				}
-				tlsConn.Close()
+				conn.Close()
 				fallback.Store(true)
 				return nil, errFallback
 			},
 		},
 		httpTransport: &http.Transport{
 			DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return dialer.DialTLSContext(ctx, serverAddr)
+				start := time.Now()
+				conn, serverAddr, err := dns.DialTLSWithUpstreams(ctx, tlsDialerWrapper{dialer}, upstreams)
+				if err == nil {
+					upstreams.Record(serverAddr, time.Since(start))
+				}
+				return conn, err
 			},
 		},
 		fallback: &fallback,

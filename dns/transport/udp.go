@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
@@ -13,7 +14,6 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/buf"
-	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -31,6 +31,7 @@ type UDPTransport struct {
 	dns.TransportAdapter
 	logger       logger.ContextLogger
 	dialer       N.Dialer
+	upstreams    *dns.UpstreamSelector
 	serverAddr   M.Socksaddr
 	udpSize      int
 	tcpTransport *TCPTransport
@@ -44,26 +45,23 @@ func NewUDP(ctx context.Context, logger log.ContextLogger, tag string, options o
 	if err != nil {
 		return nil, err
 	}
-	serverAddr := options.DNSServerAddressOptions.Build()
-	if serverAddr.Port == 0 {
-		serverAddr.Port = 53
+	upstreams, err := dns.BuildUpstreamSelector(options, 53)
+	if err != nil {
+		return nil, err
 	}
-	if !serverAddr.IsValid() {
-		return nil, E.New("invalid server address: ", serverAddr)
-	}
-	return NewUDPRaw(logger, dns.NewTransportAdapterWithRemoteOptions(C.DNSTypeUDP, tag, options), transportDialer, serverAddr), nil
+	return NewUDPRaw(logger, dns.NewTransportAdapterWithRemoteOptions(C.DNSTypeUDP, tag, options), transportDialer, upstreams), nil
 }
 
-func NewUDPRaw(logger logger.ContextLogger, adapter dns.TransportAdapter, dialer N.Dialer, serverAddr M.Socksaddr) *UDPTransport {
+func NewUDPRaw(logger logger.ContextLogger, adapter dns.TransportAdapter, dialer N.Dialer, upstreams *dns.UpstreamSelector) *UDPTransport {
 	return &UDPTransport{
 		TransportAdapter: adapter,
 		logger:           logger,
 		dialer:           dialer,
-		serverAddr:       serverAddr,
+		upstreams:        upstreams,
 		udpSize:          2048,
 		tcpTransport: &TCPTransport{
-			dialer:     dialer,
-			serverAddr: serverAddr,
+			dialer:    dialer,
+			upstreams: upstreams,
 		},
 		done: make(chan struct{}),
 	}
@@ -132,6 +130,7 @@ func (t *UDPTransport) exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.M
 	if err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	_, err = conn.Write(rawMessage)
 	if err != nil {
 		conn.Close(err)
@@ -140,6 +139,7 @@ func (t *UDPTransport) exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.M
 	select {
 	case <-callback.done:
 		callback.message.Id = messageId
+		t.upstreams.Record(t.serverAddr, time.Since(start))
 		return callback.message, nil
 	case <-conn.done:
 		return nil, conn.err
@@ -161,7 +161,7 @@ func (t *UDPTransport) open(ctx context.Context) (*dnsConnection, error) {
 			return t.conn, nil
 		}
 	}
-	conn, err := t.dialer.DialContext(ctx, N.NetworkUDP, t.serverAddr)
+	conn, serverAddr, err := dns.DialContextWithUpstreams(ctx, t.dialer, N.NetworkUDP, t.upstreams)
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +171,7 @@ func (t *UDPTransport) open(ctx context.Context) (*dnsConnection, error) {
 		callbacks: make(map[uint16]*dnsCallback),
 	}
 	go t.recvLoop(dnsConn)
+	t.serverAddr = serverAddr
 	t.conn = dnsConn
 	return dnsConn, nil
 }

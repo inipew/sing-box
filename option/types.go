@@ -106,6 +106,50 @@ func (s *DomainStrategy) UnmarshalJSON(bytes []byte) error {
 	return nil
 }
 
+type UpstreamStrategy string
+
+const (
+	UpstreamStrategyRoundRobin       UpstreamStrategy = "round_robin"
+	UpstreamStrategyRandom           UpstreamStrategy = "random"
+	UpstreamStrategyFastest          UpstreamStrategy = "fastest"
+	UpstreamStrategyFastestRandomTwo UpstreamStrategy = "fastest_random_two_thirds"
+	UpstreamStrategyParallel         UpstreamStrategy = "parallel"
+)
+
+func (s UpstreamStrategy) String() string {
+	return string(s)
+}
+
+func (s UpstreamStrategy) MarshalJSON() ([]byte, error) {
+	if s == "" || s == UpstreamStrategyRoundRobin {
+		return json.Marshal(string(UpstreamStrategyRoundRobin))
+	}
+	return json.Marshal(string(s))
+}
+
+func (s *UpstreamStrategy) UnmarshalJSON(bytes []byte) error {
+	var value string
+	err := json.Unmarshal(bytes, &value)
+	if err != nil {
+		return err
+	}
+	switch UpstreamStrategy(value) {
+	case "", UpstreamStrategyRoundRobin:
+		*s = UpstreamStrategyRoundRobin
+	case UpstreamStrategyRandom:
+		*s = UpstreamStrategyRandom
+	case UpstreamStrategyFastest:
+		*s = UpstreamStrategyFastest
+	case UpstreamStrategyFastestRandomTwo:
+		*s = UpstreamStrategyFastestRandomTwo
+	case UpstreamStrategyParallel:
+		*s = UpstreamStrategyParallel
+	default:
+		return E.New("unknown upstream strategy: ", value)
+	}
+	return nil
+}
+
 type DNSQueryType uint16
 
 func (t DNSQueryType) String() string {
