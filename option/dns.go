@@ -381,9 +381,34 @@ type LocalDNSServerOptions struct {
 type RemoteDNSServerOptions struct {
 	RawLocalDNSServerOptions
 	DNSServerAddressOptions
-	LegacyAddressResolver      string             `json:"-"`
-	LegacyAddressStrategy      DomainStrategy     `json:"-"`
-	LegacyAddressFallbackDelay badoption.Duration `json:"-"`
+	Upstreams                  []DNSServerAddressOptions `json:"upstreams,omitempty"`
+	UpstreamStrategy           UpstreamStrategy          `json:"upstream_strategy,omitempty"`
+	LegacyAddressResolver      string                    `json:"-"`
+	LegacyAddressStrategy      DomainStrategy            `json:"-"`
+	LegacyAddressFallbackDelay badoption.Duration        `json:"-"`
+}
+
+func (o RemoteDNSServerOptions) ServerAddressOptions() []DNSServerAddressOptions {
+	var servers []DNSServerAddressOptions
+	if o.Server != "" {
+		servers = append(servers, o.DNSServerAddressOptions)
+	}
+	if len(o.Upstreams) > 0 {
+		servers = append(servers, o.Upstreams...)
+	}
+	return servers
+}
+
+func (o RemoteDNSServerOptions) HasDomainServer() bool {
+	if o.ServerIsDomain() {
+		return true
+	}
+	for _, upstream := range o.Upstreams {
+		if upstream.ServerIsDomain() {
+			return true
+		}
+	}
+	return false
 }
 
 type RemoteTLSDNSServerOptions struct {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/http3"
@@ -88,12 +89,9 @@ func NewHTTP3(ctx context.Context, logger log.ContextLogger, tag string, options
 	if err != nil {
 		return nil, err
 	}
-	serverAddr := options.DNSServerAddressOptions.Build()
-	if serverAddr.Port == 0 {
-		serverAddr.Port = 443
-	}
-	if !serverAddr.IsValid() {
-		return nil, E.New("invalid server address: ", serverAddr)
+	upstreams, err := dns.BuildUpstreamSelector(options.RemoteDNSServerOptions, 443)
+	if err != nil {
+		return nil, err
 	}
 	return &HTTP3Transport{
 		TransportAdapter: dns.NewTransportAdapterWithRemoteOptions(C.DNSTypeHTTP3, tag, options.RemoteDNSServerOptions),
@@ -103,11 +101,13 @@ func NewHTTP3(ctx context.Context, logger log.ContextLogger, tag string, options
 		headers:          headers,
 		transport: &http3.Transport{
 			Dial: func(ctx context.Context, addr string, tlsCfg *tls.STDConfig, cfg *quic.Config) (*quic.Conn, error) {
-				conn, dialErr := transportDialer.DialContext(ctx, N.NetworkUDP, serverAddr)
+				start := time.Now()
+				conn, serverAddr, dialErr := dns.DialContextWithUpstreams(ctx, transportDialer, N.NetworkUDP, upstreams)
 				if dialErr != nil {
 					return nil, dialErr
 				}
-				return quic.DialEarly(ctx, bufio.NewUnbindPacketConn(conn), conn.RemoteAddr(), tlsCfg, cfg)
+				upstreams.Record(serverAddr, time.Since(start))
+				return quic.DialEarly(ctx, bufio.NewUnbindPacketConn(conn), serverAddr.UDPAddr(), tlsCfg, cfg)
 			},
 			TLSClientConfig: stdConfig,
 		},

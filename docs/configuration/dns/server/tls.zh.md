@@ -19,6 +19,13 @@ icon: material/new-box
         "server": "",
         "server_port": 853,
 
+        "upstreams": [
+          {
+            "server": "",
+            "server_port": 853
+          }
+        ],
+
         "tls": {},
 
         // 拨号字段
@@ -37,9 +44,11 @@ icon: material/new-box
 
 #### server
 
-==必填==
+`upstreams` 未配置时必填。
 
-DNS 服务器的地址。
+DNS 服务器的地址。填写此字段或在 `upstreams` 中提供至少一个上游地址。
+
+若仅使用 `upstreams`，请同时提供 `server` 或在 `tls.server_name` 中填写握手所需的域名。
 
 如果使用域名，还必须设置 `domain_resolver` 来解析 IP 地址。
 
@@ -48,6 +57,22 @@ DNS 服务器的地址。
 DNS 服务器的端口。
 
 默认使用 `853`。
+
+#### upstreams
+
+额外的上游 DNS 端点。
+
+每个条目使用与主地址相同的 `server` 与 `server_port` 字段。配置多个上游时，会按顺序轮换并在失败后继续尝试。只要提供至少一个上游，主 `server` 字段可以留空。
+
+#### upstream_strategy
+
+可选，控制多上游的负载均衡方式。
+
+- `round_robin`（默认）：每次请求轮换上游。
+- `random`：每次请求随机选择顺序。
+- `fastest`：根据近期查询延迟优先选择最快上游。
+- `fastest_random_two_thirds`：在最快的三分之二中随机分配，请求失败再退回其余上游。
+- `parallel`：并行拨号所有上游，优先使用最先成功的连接。
 
 #### tls
 

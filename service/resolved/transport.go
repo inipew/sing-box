@@ -133,10 +133,12 @@ func (t *Transport) updateTransports(link *TransportLink) error {
 				Enabled:    true,
 				ServerName: serverAddr.String(),
 			}))
-			transports = append(transports, transport.NewTLSRaw(t.logger, t.TransportAdapter, serverDialer, M.SocksaddrFrom(serverAddr, 53), tlsConfig))
+			upstreams := dns.NewUpstreamSelector([]M.Socksaddr{M.SocksaddrFrom(serverAddr, 53)}, option.UpstreamStrategyRoundRobin)
+			transports = append(transports, transport.NewTLSRaw(t.logger, t.TransportAdapter, serverDialer, upstreams, tlsConfig))
 
 		} else {
-			transports = append(transports, transport.NewUDPRaw(t.logger, t.TransportAdapter, serverDialer, M.SocksaddrFrom(serverAddr, 53)))
+			upstreams := dns.NewUpstreamSelector([]M.Socksaddr{M.SocksaddrFrom(serverAddr, 53)}, option.UpstreamStrategyRoundRobin)
+			transports = append(transports, transport.NewUDPRaw(t.logger, t.TransportAdapter, serverDialer, upstreams))
 		}
 	}
 	for _, address := range link.addressEx {
@@ -155,10 +157,12 @@ func (t *Transport) updateTransports(link *TransportLink) error {
 				Enabled:    true,
 				ServerName: serverName,
 			}))
-			transports = append(transports, transport.NewTLSRaw(t.logger, t.TransportAdapter, serverDialer, M.SocksaddrFrom(serverAddr, address.Port), tlsConfig))
+			upstreams := dns.NewUpstreamSelector([]M.Socksaddr{M.SocksaddrFrom(serverAddr, address.Port)}, option.UpstreamStrategyRoundRobin)
+			transports = append(transports, transport.NewTLSRaw(t.logger, t.TransportAdapter, serverDialer, upstreams, tlsConfig))
 
 		} else {
-			transports = append(transports, transport.NewUDPRaw(t.logger, t.TransportAdapter, serverDialer, M.SocksaddrFrom(serverAddr, address.Port)))
+			upstreams := dns.NewUpstreamSelector([]M.Socksaddr{M.SocksaddrFrom(serverAddr, address.Port)}, option.UpstreamStrategyRoundRobin)
+			transports = append(transports, transport.NewUDPRaw(t.logger, t.TransportAdapter, serverDialer, upstreams))
 		}
 	}
 	t.linkServers[link] = &LinkServers{

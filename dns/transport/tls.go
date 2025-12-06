@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
@@ -31,15 +32,16 @@ type TLSTransport struct {
 	dns.TransportAdapter
 	logger      logger.ContextLogger
 	dialer      tls.Dialer
-	serverAddr  M.Socksaddr
+	upstreams   *dns.UpstreamSelector
 	tlsConfig   tls.Config
 	access      sync.Mutex
 	connections list.List[*tlsDNSConn]
 }
 
 type tlsDNSConn struct {
-	tls.Conn
-	queryId uint16
+	dns.TLSConn
+	serverAddr M.Socksaddr
+	queryId    uint16
 }
 
 func NewTLS(ctx context.Context, logger log.ContextLogger, tag string, options option.RemoteTLSDNSServerOptions) (adapter.DNSTransport, error) {
@@ -53,22 +55,19 @@ func NewTLS(ctx context.Context, logger log.ContextLogger, tag string, options o
 	if err != nil {
 		return nil, err
 	}
-	serverAddr := options.DNSServerAddressOptions.Build()
-	if serverAddr.Port == 0 {
-		serverAddr.Port = 853
+	upstreams, err := dns.BuildUpstreamSelector(options.RemoteDNSServerOptions, 853)
+	if err != nil {
+		return nil, err
 	}
-	if !serverAddr.IsValid() {
-		return nil, E.New("invalid server address: ", serverAddr)
-	}
-	return NewTLSRaw(logger, dns.NewTransportAdapterWithRemoteOptions(C.DNSTypeTLS, tag, options.RemoteDNSServerOptions), transportDialer, serverAddr, tlsConfig), nil
+	return NewTLSRaw(logger, dns.NewTransportAdapterWithRemoteOptions(C.DNSTypeTLS, tag, options.RemoteDNSServerOptions), transportDialer, upstreams, tlsConfig), nil
 }
 
-func NewTLSRaw(logger logger.ContextLogger, adapter dns.TransportAdapter, dialer N.Dialer, serverAddr M.Socksaddr, tlsConfig tls.Config) *TLSTransport {
+func NewTLSRaw(logger logger.ContextLogger, adapter dns.TransportAdapter, dialer N.Dialer, upstreams *dns.UpstreamSelector, tlsConfig tls.Config) *TLSTransport {
 	return &TLSTransport{
 		TransportAdapter: adapter,
 		logger:           logger,
 		dialer:           tls.NewDialer(dialer, tlsConfig),
-		serverAddr:       serverAddr,
+		upstreams:        upstreams,
 		tlsConfig:        tlsConfig,
 	}
 }
@@ -100,14 +99,15 @@ func (t *TLSTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.M
 			return response, nil
 		}
 	}
-	tlsConn, err := t.dialer.DialTLSContext(ctx, t.serverAddr)
+	tlsConn, serverAddr, err := dns.DialTLSWithUpstreams(ctx, tlsDialerWrapper{t.dialer}, t.upstreams)
 	if err != nil {
 		return nil, err
 	}
-	return t.exchange(message, &tlsDNSConn{Conn: tlsConn})
+	return t.exchange(message, &tlsDNSConn{TLSConn: tlsConn, serverAddr: serverAddr})
 }
 
 func (t *TLSTransport) exchange(message *mDNS.Msg, conn *tlsDNSConn) (*mDNS.Msg, error) {
+	start := time.Now()
 	conn.queryId++
 	err := WriteMessage(conn, conn.queryId, message)
 	if err != nil {
@@ -122,5 +122,6 @@ func (t *TLSTransport) exchange(message *mDNS.Msg, conn *tlsDNSConn) (*mDNS.Msg,
 	t.access.Lock()
 	t.connections.PushBack(conn)
 	t.access.Unlock()
+	t.upstreams.Record(conn.serverAddr, time.Since(start))
 	return response, nil
 }

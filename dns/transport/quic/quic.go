@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/sing-box/adapter"
@@ -16,9 +17,7 @@ import (
 	sQUIC "github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/bufio"
-	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
-	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 
 	mDNS "github.com/miekg/dns"
@@ -35,7 +34,7 @@ type Transport struct {
 	ctx        context.Context
 	logger     logger.ContextLogger
 	dialer     N.Dialer
-	serverAddr M.Socksaddr
+	upstreams  *dns.UpstreamSelector
 	tlsConfig  tls.Config
 	access     sync.Mutex
 	connection *quic.Conn
@@ -55,19 +54,16 @@ func NewQUIC(ctx context.Context, logger log.ContextLogger, tag string, options 
 	if len(tlsConfig.NextProtos()) == 0 {
 		tlsConfig.SetNextProtos([]string{"doq"})
 	}
-	serverAddr := options.DNSServerAddressOptions.Build()
-	if serverAddr.Port == 0 {
-		serverAddr.Port = 853
-	}
-	if !serverAddr.IsValid() {
-		return nil, E.New("invalid server address: ", serverAddr)
+	upstreams, err := dns.BuildUpstreamSelector(options.RemoteDNSServerOptions, 853)
+	if err != nil {
+		return nil, err
 	}
 	return &Transport{
 		TransportAdapter: dns.NewTransportAdapterWithRemoteOptions(C.DNSTypeQUIC, tag, options.RemoteDNSServerOptions),
 		ctx:              ctx,
 		logger:           logger,
 		dialer:           transportDialer,
-		serverAddr:       serverAddr,
+		upstreams:        upstreams,
 		tlsConfig:        tlsConfig,
 	}, nil
 }
@@ -121,14 +117,16 @@ func (t *Transport) openConnection() (*quic.Conn, error) {
 	if connection != nil && !common.Done(connection.Context()) {
 		return connection, nil
 	}
-	conn, err := t.dialer.DialContext(t.ctx, N.NetworkUDP, t.serverAddr)
+	start := time.Now()
+	conn, serverAddr, err := dns.DialContextWithUpstreams(t.ctx, t.dialer, N.NetworkUDP, t.upstreams)
 	if err != nil {
 		return nil, err
 	}
+	t.upstreams.Record(serverAddr, time.Since(start))
 	earlyConnection, err := sQUIC.DialEarly(
 		t.ctx,
 		bufio.NewUnbindPacketConn(conn),
-		t.serverAddr.UDPAddr(),
+		serverAddr.UDPAddr(),
 		t.tlsConfig,
 		nil,
 	)

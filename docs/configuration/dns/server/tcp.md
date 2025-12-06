@@ -15,10 +15,17 @@ icon: material/new-box
       {
         "type": "tcp",
         "tag": "",
-        
+
         "server": "",
         "server_port": 53,
-        
+
+        "upstreams": [
+          {
+            "server": "",
+            "server_port": 53
+          }
+        ],
+
         // Dial Fields
       }
     ]
@@ -35,9 +42,9 @@ icon: material/new-box
 
 #### server
 
-==Required==
+Required unless `upstreams` is set.
 
-The address of the DNS server.
+The address of the DNS server. Provide either this field or at least one entry under `upstreams`.
 
 If domain name is used, `domain_resolver` must also be set to resolve IP address.
 
@@ -46,6 +53,22 @@ If domain name is used, `domain_resolver` must also be set to resolve IP address
 The port of the DNS server.
 
 `53` will be used by default.
+
+#### upstreams
+
+Additional upstream DNS endpoints.
+
+Each entry accepts the same `server` and `server_port` fields as the primary address. When multiple upstreams are configured, they will be rotated and retried in order until a connection succeeds. The primary `server` field can be omitted if at least one upstream is provided.
+
+#### upstream_strategy
+
+Optional. Controls how multiple upstream addresses are balanced.
+
+- `round_robin` (default): rotate upstreams for each request.
+- `random`: pick a random order for each request.
+- `fastest`: prefer the lowest-latency upstreams based on recent queries.
+- `fastest_random_two_thirds`: shuffle requests among the fastest two thirds, then fall back to the rest.
+- `parallel`: dial all upstreams in parallel and use the first successful connection.
 
 ### Dial Fields
 

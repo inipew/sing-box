@@ -23,7 +23,6 @@ import (
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
-	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	sHTTP "github.com/sagernet/sing/protocol/http"
 
@@ -93,12 +92,9 @@ func NewHTTPS(ctx context.Context, logger log.ContextLogger, tag string, options
 	if err != nil {
 		return nil, err
 	}
-	serverAddr := options.DNSServerAddressOptions.Build()
-	if serverAddr.Port == 0 {
-		serverAddr.Port = 443
-	}
-	if !serverAddr.IsValid() {
-		return nil, E.New("invalid server address: ", serverAddr)
+	upstreams, err := dns.BuildUpstreamSelector(options.RemoteDNSServerOptions, 443)
+	if err != nil {
+		return nil, err
 	}
 	return NewHTTPSRaw(
 		dns.NewTransportAdapterWithRemoteOptions(C.DNSTypeHTTPS, tag, options.RemoteDNSServerOptions),
@@ -106,7 +102,7 @@ func NewHTTPS(ctx context.Context, logger log.ContextLogger, tag string, options
 		transportDialer,
 		&destinationURL,
 		headers,
-		serverAddr,
+		upstreams,
 		tlsConfig,
 	), nil
 }
@@ -117,7 +113,7 @@ func NewHTTPSRaw(
 	dialer N.Dialer,
 	destination *url.URL,
 	headers http.Header,
-	serverAddr M.Socksaddr,
+	upstreams *dns.UpstreamSelector,
 	tlsConfig tls.Config,
 ) *HTTPSTransport {
 	return &HTTPSTransport{
@@ -126,7 +122,7 @@ func NewHTTPSRaw(
 		dialer:           dialer,
 		destination:      destination,
 		headers:          headers,
-		transport:        NewHTTPSTransportWrapper(tls.NewDialer(dialer, tlsConfig), serverAddr),
+		transport:        NewHTTPSTransportWrapper(tls.NewDialer(dialer, tlsConfig), upstreams),
 	}
 }
 
