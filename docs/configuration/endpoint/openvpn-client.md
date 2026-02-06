@@ -103,6 +103,7 @@
   "explicit_exit_notify": 0,
   "system": false,
   "inner_domain_resolver": "", // or {}
+  "gso": false,
   "name": "",
   "mtu": 1500,
   "on_demand": false,
@@ -727,6 +728,18 @@ This option uses the same format as [domain_resolver](/configuration/shared/dial
 When unset, existing DNS routing rules and the default DNS apply. IP destinations do not require domain resolution.
 
 This option does not affect VPN server address resolution, which continues to use `domain_resolver` from the dial fields.
+
+### gso
+
+!!! quote ""
+
+    Only supported on Linux.
+
+Attempt to enable generic segmentation offload for the system interface.
+
+Enabled by default when `system` is `true`. Set to `false` to disable.
+
+This option has no effect when `system` is `false`.
 ### name
 
 Custom interface name for the system interface.

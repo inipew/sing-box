@@ -132,6 +132,7 @@ func (e *Endpoint) Initialize(memoryPressure func() tun.MemoryPressure) error {
 		Context:         options.Context,
 		Logger:          options.Logger,
 		System:          options.System,
+		GSO:             options.GSO,
 		Handler:         options.Handler,
 		UDPTimeout:      options.UDPTimeout,
 		ICMPTimeout:     options.ICMPTimeout,

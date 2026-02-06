@@ -13,6 +13,7 @@
 
   "system": false,
   "inner_domain_resolver": "", // or {}
+  "gso": false,
   "name": "",
   "mtu": 1500,
   "mode": "tls",
@@ -124,6 +125,18 @@ Set the DNS resolver used for destination domain names when this endpoint is sel
 This option uses the same format as [domain_resolver](/configuration/shared/dial/#domain_resolver).
 
 When unset, existing DNS routing rules and the default DNS apply. IP destinations do not require domain resolution.
+
+### gso
+
+!!! quote ""
+
+    Only supported on Linux.
+
+Attempt to enable generic segmentation offload for the system interface.
+
+Enabled by default when `system` is `true`. Set to `false` to disable.
+
+This option has no effect when `system` is `false`.
 ### name
 
 Custom interface name for system interface.

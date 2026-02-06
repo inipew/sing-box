@@ -13,6 +13,7 @@
 
   "system": false,
   "inner_domain_resolver": "", // or {}
+  "gso": false,
   "name": "",
   "mtu": 1500,
   "mode": "tls",
@@ -123,6 +124,18 @@ endpoint 会配置接口地址和 MTU，但不会安装操作系统路由或 DNS
 此选项使用与 [domain_resolver](/zh/configuration/shared/dial/#domain_resolver) 相同的格式。
 
 未设置时，使用现有 DNS 路由规则及默认 DNS。目标为 IP 地址时不进行域名解析。
+
+### gso
+
+!!! quote ""
+
+    仅支持 Linux。
+
+尝试为系统接口启用通用分段卸载。
+
+当 `system` 为 `true` 时，默认启用。设为 `false` 可禁用。
+
+当 `system` 为 `false` 时，此选项不生效。
 ### name
 
 系统接口的自定义接口名称。

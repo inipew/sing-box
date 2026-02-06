@@ -10,6 +10,7 @@ import (
 type OpenVPNEndpointOptions struct {
 	InnerDomainResolver *DomainResolveOptions `json:"inner_domain_resolver,omitempty"`
 	System              bool                  `json:"system,omitempty"`
+	GSO                 *bool                 `json:"gso,omitempty"`
 	Name                string                `json:"name,omitempty"`
 	MTU                 uint32                `json:"mtu,omitempty"`
 	UDPMapping          UDPNATBehavior        `json:"udp_mapping,omitempty"`

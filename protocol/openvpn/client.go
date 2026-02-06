@@ -132,6 +132,10 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
 	if options.UDPTimeout != 0 {
 		udpTimeout = time.Duration(options.UDPTimeout)
 	}
+	gso := options.System
+	if options.GSO != nil {
+		gso = *options.GSO
+	}
 	deviceMTU := options.MTU
 	if deviceMTU == 0 {
 		deviceMTU = ovpntransport.DefaultMTU
@@ -140,6 +144,8 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
 		Context:         ctx,
 		Logger:          logger,
 		System:          options.System,
+		GSO:             gso,
+		GSO:             gso,
 		Handler:         clientEndpoint,
 		UDPTimeout:      udpTimeout,
 		ICMPTimeout:     C.ICMPTimeout,

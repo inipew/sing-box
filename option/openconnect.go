@@ -6,6 +6,7 @@ type OpenConnectEndpointOptions struct {
 	DialerOptions
 	InnerDomainResolver            *DomainResolveOptions                `json:"inner_domain_resolver,omitempty"`
 	System                         bool                                 `json:"system,omitempty"`
+	GSO                            *bool                                `json:"gso,omitempty"`
 	Name                           string                               `json:"name,omitempty"`
 	UDPTimeout                     badoption.Duration                   `json:"udp_timeout,omitempty"`
 	UDPMapping                     UDPNATBehavior                       `json:"udp_mapping,omitempty"`
