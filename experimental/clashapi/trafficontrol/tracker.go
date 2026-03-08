@@ -31,6 +31,12 @@ type TrackerMetadata struct {
 }
 
 func (t TrackerMetadata) MarshalJSON() ([]byte, error) {
+	var inbound string
+	if t.Metadata.Inbound != "" {
+		inbound = t.Metadata.InboundType + "/" + t.Metadata.Inbound
+	} else {
+		inbound = t.Metadata.InboundType
+	}
 	var domain string
 	if t.Metadata.Destination.Fqdn != "" {
 		domain = t.Metadata.Destination.Fqdn
@@ -76,8 +82,7 @@ func (t TrackerMetadata) MarshalJSON() ([]byte, error) {
 		"id": t.ID,
 		"metadata": map[string]any{
 			"network":         t.Metadata.Network,
-			"type":            C.ProxyDisplayName(t.Metadata.InboundType),
-			"inboundName":     t.Metadata.Inbound,
+			"type":            inbound,
 			"sourceIP":        t.Metadata.Source.Addr,
 			"destinationIP":   destinationAddr,
 			"sourcePort":      F.ToString(t.Metadata.Source.Port),
