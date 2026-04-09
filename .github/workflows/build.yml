@@ -68,7 +68,7 @@ concurrency:
 
 env:
   GO_VERSION: "1.25.8"
-  NDK_VERSION: "r29"
+  NDK_VERSION: "r30-beta1"
   GOFLAGS: -buildvcs=false
   GOMODCACHE: /home/runner/go/pkg/mod
   GOCACHE: /home/runner/.cache/go-build
