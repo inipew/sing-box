@@ -121,6 +121,7 @@ func EndpointRegistry() *endpoint.Registry {
 
 	registerWireGuardEndpoint(registry)
 	registerTailscaleEndpoint(registry)
+	registerCloudflareEndpoint(registry)
 
 	return registry
 }

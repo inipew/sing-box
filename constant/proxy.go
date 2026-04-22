@@ -35,6 +35,7 @@ const (
 	TypeOOMKiller          = "oom-killer"
 	TypeACME               = "acme"
 	TypeCloudflareOriginCA = "cloudflare-origin-ca"
+	TypeCloudflare         = "cloudflare"
 )
 
 const (
@@ -97,6 +98,8 @@ func ProxyDisplayName(proxyType string) string {
 		return "Tailscale"
 	case TypeCloudflared:
 		return "Cloudflared"
+	case TypeCloudflare:
+		return "Cloudflare"
 	case TypeSelector:
 		return "Selector"
 	case TypeURLTest:
