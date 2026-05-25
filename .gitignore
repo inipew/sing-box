@@ -4,10 +4,12 @@
 /*.json
 /*.srs
 /*.db
+/*.zip
 /site/
 /bin/
 /dist/
 /sing-box
+/sing-box-*
 /sing-box.exe
 /build/
 /*.jar

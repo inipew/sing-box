@@ -1,0 +1,440 @@
+name: Build Binary Sing-box
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version name (e.g., 1.14.0-alpha.25)"
+        required: true
+        type: string
+      build_tags:
+        description: "Go build tags"
+        required: false
+        type: string
+        default: with_gvisor,with_dhcp,with_wireguard,with_clash_api,with_quic,with_utls,badlinkname,tfogo_checklinkname0
+      build_android_arm:
+        description: "Android ARM (armeabi-v7a)"
+        type: boolean
+        default: false
+      build_android_arm64:
+        description: "Android ARM64 (arm64-v8a)"
+        type: boolean
+        default: true
+      build_linux_arm64:
+        description: "Linux ARM64"
+        type: boolean
+        default: false
+      build_linux_amd64:
+        description: "Linux AMD64 (v1)"
+        type: boolean
+        default: false
+      build_linux_amd64v3:
+        description: "Linux AMD64 (v3)"
+        type: boolean
+        default: true
+      skip_upload:
+        description: "Skip Telegram upload"
+        type: boolean
+        default: false
+      force_build:
+        description: "Force build even if no changes"
+        type: boolean
+        default: true
+  push:
+    branches: [main, master]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/**"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25.12"
+  NDK_VERSION: "r30-beta1"
+  GOFLAGS: -buildvcs=false
+  GOMODCACHE: /home/runner/go/pkg/mod
+  GOCACHE: /home/runner/.cache/go-build
+  GOPROXY: https://proxy.golang.org,direct
+  GOSUMDB: sum.golang.org
+  BUILD_TAGS: >-
+    ${{ github.event_name == 'workflow_dispatch' && inputs.build_tags != ''
+        && inputs.build_tags
+        || 'with_gvisor,with_dhcp,with_wireguard,with_clash_api,with_quic,with_utls,badlinkname,tfogo_checklinkname0' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Detect whether any Go-related files changed (skipped on workflow_dispatch)
+  # ---------------------------------------------------------------------------
+  check-changes:
+    name: Check for Changes
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.detect.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          fetch-depth: 2
+
+      - name: Detect changes
+        id: detect
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Manual dispatch — build forced: ${{ inputs.force_build }}"
+          elif git diff --name-only HEAD~1 | grep -qE '\.(go|mod|sum)$'; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Go files changed — proceeding with build"
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Go files changed — skipping build"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Resolve version string
+  # ---------------------------------------------------------------------------
+  get-version:
+    name: Resolve Version
+    runs-on: ubuntu-latest
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      version_clean: ${{ steps.resolve.outputs.version_clean }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        if: github.event_name != 'workflow_dispatch' || inputs.version == ''
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: true
+
+      - name: Resolve version
+        id: resolve
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+            if [[ ! "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+              echo "::error::Invalid version format. Expected: 1.2.3 or 1.2.3-beta.1"
+              exit 1
+            fi
+            [[ "$VERSION" != v* ]] && VERSION="v$VERSION"
+          else
+            git remote add sekai https://github.com/SagerNet/sing-box.git 2>/dev/null || true
+            git fetch --tags sekai 2>/dev/null || true
+            VERSION=$(CGO_ENABLED=0 go run ./cmd/internal/read_tag 2>/dev/null \
+              || git describe --tags --always --dirty 2>/dev/null \
+              || echo "v0.0.0-dev")
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_clean=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Version: $VERSION"
+
+  # ---------------------------------------------------------------------------
+  # Build dynamic matrix from user-selected targets
+  # ---------------------------------------------------------------------------
+  select-targets:
+    name: Select Targets
+    runs-on: ubuntu-latest
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Resolve build matrix
+        id: resolve
+        run: |
+          # On push/PR always build the two most common targets
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
+            AND_ARM=false  AND_ARM64=true
+            LNX_ARM64=false LNX_AMD64=false LNX_AMD64V3=true
+          else
+            AND_ARM="${{ inputs.build_android_arm }}"
+            AND_ARM64="${{ inputs.build_android_arm64 }}"
+            LNX_ARM64="${{ inputs.build_linux_arm64 }}"
+            LNX_AMD64="${{ inputs.build_linux_amd64 }}"
+            LNX_AMD64V3="${{ inputs.build_linux_amd64v3 }}"
+          fi
+
+          ITEMS=()
+          [[ "$AND_ARM"    == true ]] && ITEMS+=('{"name":"Android ARM","goos":"android","goarch":"arm","ndk":"armv7a-linux-androideabi29","output":"android-armeabi-v7a","cgo":1}')
+          [[ "$AND_ARM64"  == true ]] && ITEMS+=('{"name":"Android ARM64","goos":"android","goarch":"arm64","ndk":"aarch64-linux-android29","output":"android-arm64-v8a","cgo":1}')
+          [[ "$LNX_ARM64"  == true ]] && ITEMS+=('{"name":"Linux ARM64","goos":"linux","goarch":"arm64","output":"linux-arm64","cgo":0,"cc":"clang","cxx":"clang++"}')
+          [[ "$LNX_AMD64"  == true ]] && ITEMS+=('{"name":"Linux AMD64","goos":"linux","goarch":"amd64","goamd64":"v1","output":"linux-amd64","cgo":1,"cc":"clang","cxx":"clang++"}')
+          [[ "$LNX_AMD64V3" == true ]] && ITEMS+=('{"name":"Linux AMD64v3","goos":"linux","goarch":"amd64","goamd64":"v3","output":"linux-amd64v3","cgo":1,"cc":"clang","cxx":"clang++"}')
+
+          if [[ ${#ITEMS[@]} -eq 0 ]]; then
+            echo "::error::No build targets selected. Enable at least one target."
+            exit 1
+          fi
+
+          MATRIX='{"include":['
+          printf -v JOINED '%s,' "${ITEMS[@]}"
+          MATRIX+="${JOINED%,}"
+          MATRIX+=']}'
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "::group::Resolved matrix"; echo "$MATRIX" | python3 -m json.tool; echo "::endgroup::"
+
+  # ---------------------------------------------------------------------------
+  # Compile binaries
+  # ---------------------------------------------------------------------------
+  build-binary:
+    name: Build · ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    needs: [check-changes, get-version, select-targets]
+    if: needs.check-changes.outputs.should_build == 'true'
+    timeout-minutes: 45
+    strategy:
+      matrix: ${{ fromJSON(needs.select-targets.outputs.matrix) }}
+      fail-fast: false
+      max-parallel: 3
+    env:
+      VERSION: ${{ needs.get-version.outputs.version }}
+      VERSION_CLEAN: ${{ needs.get-version.outputs.version_clean }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          fetch-depth: 1
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Set week number
+        run: echo "WEEK=$(date +'%G-%V')" >> "$GITHUB_ENV"
+
+      - name: Cache gotip (weekly)
+        id: cache-gotip
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/bin/gotip
+            ~/sdk/gotip
+          key: ${{ runner.os }}-gotip-${{ env.WEEK }}
+          restore-keys: ${{ runner.os }}-gotip-
+
+      - name: Install / update gotip
+        run: |
+          GOTIP="$HOME/go/bin/gotip"
+
+          [[ ! -x "$GOTIP" ]] && go install golang.org/dl/gotip@latest
+
+          if [[ "${{ steps.cache-gotip.outputs.cache-hit }}" != "true" || ! -d "$HOME/sdk/gotip" ]]; then
+            echo "Cache miss — downloading gotip toolchain…"
+            "$GOTIP" download
+          fi
+
+          "$GOTIP" version
+
+      - name: Cache Go build artifacts
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.GOCACHE }}
+          key: ${{ runner.os }}-gobuild-${{ matrix.goos }}-${{ matrix.goarch }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-gobuild-${{ matrix.goos }}-${{ matrix.goarch }}-
+            ${{ runner.os }}-gobuild-
+
+      - name: Setup Android NDK
+        if: matrix.goos == 'android'
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+
+      - name: Show build info
+        run: |
+          echo "::group::Build info"
+          echo "Version : $VERSION"
+          echo "Target  : ${{ matrix.goos }}/${{ matrix.goarch }}"
+          echo "CGO     : ${{ matrix.cgo }}"
+          echo "Tags    : ${{ env.BUILD_TAGS }}"
+          echo "Go tip  : $(~/go/bin/gotip version)"
+          [[ "${{ matrix.goos }}" == android ]] && echo "NDK     : ${{ env.NDK_VERSION }} / ${{ matrix.ndk }}"
+          echo "::endgroup::"
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOAMD64: ${{ matrix.goamd64 || '' }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+          # Android uses NDK compilers; Linux uses system clang
+          CC: >-
+            ${{ matrix.goos == 'android'
+                && format('{0}/toolchains/llvm/prebuilt/linux-x86_64/bin/{1}-clang',   steps.ndk.outputs.ndk-path, matrix.ndk)
+                || matrix.cc || '' }}
+          CXX: >-
+            ${{ matrix.goos == 'android'
+                && format('{0}/toolchains/llvm/prebuilt/linux-x86_64/bin/{1}-clang++', steps.ndk.outputs.ndk-path, matrix.ndk)
+                || matrix.cxx || '' }}
+        run: |
+          [[ "${{ matrix.goos }}" == android && "${{ matrix.goarch }}" == arm ]] && export GOARM=7
+
+          if [[ "${{ matrix.goos }}" == android && ! -f "$CC" ]]; then
+            echo "::error::NDK compiler not found: $CC"
+            exit 1
+          fi
+
+          START=$(date +%s)
+
+          ~/go/bin/gotip build -v -trimpath \
+            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$VERSION' -s -w -buildid= -checklinkname=0" \
+            -tags "${{ env.BUILD_TAGS }}" \
+            -o sing-box \
+            ./cmd/sing-box
+
+          [[ ! -f ./sing-box ]] && { echo "::error::Binary not produced"; exit 1; }
+
+          SIZE=$(stat -c%s ./sing-box)
+          echo "::notice::Built in $(($(date +%s)-START))s — ${SIZE} bytes"
+
+      - name: Smoke test
+        run: |
+          chmod +x ./sing-box
+          timeout 10s ./sing-box version \
+            || echo "::warning::Smoke test failed or timed out (cross-compiled binary may not run on host)"
+
+      - name: Package & checksum
+        run: |
+          mkdir -p bin
+          ARCHIVE="bin/sing-box-${VERSION_CLEAN}-${{ matrix.output }}.zip"
+          zip -9 -j "$ARCHIVE" ./sing-box
+          sha256sum "$ARCHIVE" > "bin/SHA256SUMS-${{ matrix.output }}.txt"
+          ls -lh bin/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sing-box-${{ env.VERSION_CLEAN }}-${{ matrix.output }}
+          path: bin/
+          retention-days: 7
+          compression-level: 9
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Send built archives to Telegram (workflow_dispatch only, unless skipped)
+  # ---------------------------------------------------------------------------
+  upload-telegram:
+    name: Upload to Telegram
+    runs-on: ubuntu-latest
+    needs: [get-version, build-binary]
+    if: |
+      always() &&
+      needs.build-binary.result == 'success' &&
+      github.event_name == 'workflow_dispatch' &&
+      !inputs.skip_upload
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          fetch-depth: 10
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: bin/
+          merge-multiple: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: .github/requirements.txt
+
+      - name: Install Python dependencies
+        run: pip install --no-cache-dir -r .github/requirements.txt
+
+      - name: Validate secrets
+        run: |
+          [[ -z "${{ secrets.BOT_TOKEN }}" ]]        && { echo "::error::BOT_TOKEN not set";        exit 1; } || true
+          [[ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]] && { echo "::error::TELEGRAM_CHAT_ID not set"; exit 1; } || true
+
+      - name: Prepare commit log
+        id: log
+        run: |
+          set +o pipefail
+          COMMIT=$(git log --pretty=format:"%h %an %s" \
+            | grep -vE "yelnoo|yaotthaha|lux5am|inipew|reF1nd|Nova" \
+            | sed 's/^\([^ ]*\) [^ ]* /`\1` — /' \
+            | head -n 10)
+
+          CHERRY=$(git log --pretty=format:"%h %an %s" --committer="inipew" \
+            | sed 's/^\([^ ]*\) [^ ]* /`\1` — /')
+          set -o pipefail
+          {
+            echo "COMMIT<<EOF"
+            echo "$COMMIT"
+            echo "EOF"
+            echo "CHERRY_PICK_COMMIT<<EOF"
+            echo "$CHERRY"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Upload to Telegram
+        env:
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          VERSION: ${{ needs.get-version.outputs.version }}
+          TAGS: ${{ env.BUILD_TAGS }}
+        run: |
+          mapfile -t FILES < <(find bin -name "sing-box-*.zip" -type f | sort)
+          [[ ${#FILES[@]} -eq 0 ]] && { echo "::error::No zip files found"; exit 1; }
+
+          for f in "${FILES[@]}"; do
+            echo "Uploading: $f"
+            for attempt in 1 2 3; do
+              python3 .github/sendtotelegramchannel.py "$f" && break
+              echo "Retry $attempt/3…"; sleep 5
+            done
+          done
+
+          echo "::notice::All files uploaded"
+
+  # ---------------------------------------------------------------------------
+  # Post workflow summary regardless of outcome
+  # ---------------------------------------------------------------------------
+  notify:
+    name: Workflow Summary
+    runs-on: ubuntu-latest
+    needs: [get-version, build-binary, upload-telegram]
+    if: always()
+    steps:
+      - name: Write summary
+        run: |
+          {
+            echo "## Workflow Summary"
+            echo "| Job | Status |"
+            echo "|-----|--------|"
+            echo "| Build Binary    | ${{ needs.build-binary.result }} |"
+            echo "| Upload Telegram | ${{ needs.upload-telegram.result }} |"
+            echo ""
+            echo "**Version**: \`${{ needs.get-version.outputs.version }}\`"
+            echo "**Trigger**: \`${{ github.event_name }}\`"
+            echo "**Commit**: \`${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
