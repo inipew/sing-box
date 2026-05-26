@@ -50,6 +50,7 @@ const (
 	TypeSelector    = "selector"
 	TypeURLTest     = "urltest"
 	TypeLoadBalance = "loadbalance"
+	TypeWarp        = "warp"
 )
 
 func ProxyDisplayName(proxyType string) string {
@@ -122,6 +123,8 @@ func ProxyDisplayName(proxyType string) string {
 		return "URLTest"
 	case TypeLoadBalance:
 		return "LoadBalance"
+	case TypeWarp:
+		return "WARP"
 	default:
 		return "Unknown"
 	}

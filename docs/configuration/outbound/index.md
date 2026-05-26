@@ -38,6 +38,7 @@
 | `dns`          | [DNS](./dns/)                   |
 | `selector`     | [Selector](./selector/)         |
 | `urltest`      | [URLTest](./urltest/)           |
+| `warp`         | [WARP](./warp/)                 |
 | `naive`        | [NaiveProxy](./naive/)          |
 | `loadbalance`  | [LoadBalance](./loadbalance/)   |
 

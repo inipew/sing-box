@@ -59,6 +59,8 @@ type CacheFile interface {
 	SaveExternalUI(tag string, info *SavedBinary) error
 	LoadSubscription(tag string) *SavedBinary
 	SaveSubscription(tag string, sub *SavedBinary) error
+	LoadWarp(tag string) string
+	SaveWarp(tag string, credentials string) error
 }
 
 type SavedBinary struct {

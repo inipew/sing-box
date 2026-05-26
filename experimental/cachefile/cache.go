@@ -27,6 +27,7 @@ var (
 	bucketRuleSet          = []byte("rule_set")
 	bucketExternalUI       = []byte("external_ui")
 	bucketOutboundProvider = []byte("outbound_provider")
+	bucketWarp       = []byte("warp")
 
 	bucketNameList = []string{
 		string(bucketSelected),
@@ -37,6 +38,7 @@ var (
 		string(bucketOutboundProvider),
 		string(bucketRDRC),
 		string(bucketDNSCache),
+		string(bucketWarp),
 	}
 
 	cacheIDDefault = []byte("default")
@@ -172,6 +174,11 @@ func (c *CacheFile) startCacheCleanup() {
 }
 
 func (c *CacheFile) start() error {
+	c.resetAccess.Lock()
+	defer c.resetAccess.Unlock()
+	if c.DB != nil {
+		return nil
+	}
 	const fileMode = 0o666
 	cacheFile, err := filemanager.OpenFile(c.ctx, c.path, os.O_RDWR|os.O_CREATE, fileMode)
 	if err != nil {
@@ -232,13 +239,23 @@ func (c *CacheFile) start() error {
 }
 
 func (c *CacheFile) Close() error {
+	c.resetAccess.Lock()
+	defer c.resetAccess.Unlock()
 	if c.DB == nil {
 		return nil
 	}
-	return c.DB.Close()
+	err := c.DB.Close()
+	c.DB = nil
+	return err
 }
 
 func (c *CacheFile) view(fn func(tx *bbolt.Tx) error) (err error) {
+	if c.DB == nil {
+		_ = c.start()
+	}
+	if c.DB == nil {
+		return os.ErrNotExist
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			c.resetDB()
@@ -249,6 +266,12 @@ func (c *CacheFile) view(fn func(tx *bbolt.Tx) error) (err error) {
 }
 
 func (c *CacheFile) batch(fn func(tx *bbolt.Tx) error) (err error) {
+	if c.DB == nil {
+		_ = c.start()
+	}
+	if c.DB == nil {
+		return os.ErrNotExist
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			c.resetDB()
@@ -259,6 +282,12 @@ func (c *CacheFile) batch(fn func(tx *bbolt.Tx) error) (err error) {
 }
 
 func (c *CacheFile) update(fn func(tx *bbolt.Tx) error) (err error) {
+	if c.DB == nil {
+		_ = c.start()
+	}
+	if c.DB == nil {
+		return os.ErrNotExist
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			c.resetDB()
@@ -271,7 +300,10 @@ func (c *CacheFile) update(fn func(tx *bbolt.Tx) error) (err error) {
 func (c *CacheFile) resetDB() {
 	c.resetAccess.Lock()
 	defer c.resetAccess.Unlock()
-	c.DB.Close()
+	if c.DB != nil {
+		c.DB.Close()
+		c.DB = nil
+	}
 	filemanager.Remove(c.ctx, c.path)
 	db, err := bbolt.Open(c.path, 0o666, &bbolt.Options{Timeout: time.Second})
 	if err == nil {
@@ -491,5 +523,31 @@ func (c *CacheFile) SaveSubscription(tag string, sub *adapter.SavedBinary) error
 			return err
 		}
 		return bucket.Put([]byte(tag), setBinary)
+	})
+}
+
+func (c *CacheFile) LoadWarp(tag string) string {
+	var credentials string
+	c.view(func(t *bbolt.Tx) error {
+		bucket := c.bucket(t, bucketWarp)
+		if bucket == nil {
+			return nil
+		}
+		credBytes := bucket.Get([]byte(tag))
+		if len(credBytes) > 0 {
+			credentials = string(credBytes)
+		}
+		return nil
+	})
+	return credentials
+}
+
+func (c *CacheFile) SaveWarp(tag string, credentials string) error {
+	return c.batch(func(t *bbolt.Tx) error {
+		bucket, err := c.createBucket(t, bucketWarp)
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(tag), []byte(credentials))
 	})
 }
