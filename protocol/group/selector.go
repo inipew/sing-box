@@ -169,7 +169,7 @@ func (s *Selector) NewConnection(ctx context.Context, conn net.Conn, metadata ad
 	ctx = interrupt.ContextWithIsExternalConnection(ctx)
 	selected := s.selected.Load()
 	if outboundHandler, isHandler := selected.(adapter.ConnectionHandler); isHandler {
-		outboundHandler.NewConnection(ctx, conn, metadata, onClose)
+		outboundHandler.NewConnection(ctx, s.interruptGroup.NewConn(conn, interrupt.IsExternalConnectionFromContext(ctx)), metadata, onClose)
 	} else {
 		s.connection.NewConnection(ctx, s, conn, metadata, onClose)
 	}
