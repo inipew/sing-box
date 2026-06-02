@@ -24,3 +24,10 @@
 CLAUDE.md
 AGENTS.md
 /.claude/
+.env
+*.env
+session.json
+.github/telegram/*.json
+.telegram-session
+.github/telegram/.telegram-session
+
