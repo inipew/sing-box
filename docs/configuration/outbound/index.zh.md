@@ -41,6 +41,7 @@
 | `warp`         | [WARP](./warp/)                 |
 | `naive`        | [NaiveProxy](./naive/)          |
 | `loadbalance`  | [LoadBalance](./loadbalance/)   |
+| `masque`       | [MASQUE](./masque/)             |
 
 #### tag
 
@@ -51,3 +52,4 @@
 #### 支持 IP 连接的出站
 
 * `WireGuard`
+* `MASQUE`

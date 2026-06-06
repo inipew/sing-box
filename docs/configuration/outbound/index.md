@@ -41,6 +41,7 @@
 | `warp`         | [WARP](./warp/)                 |
 | `naive`        | [NaiveProxy](./naive/)          |
 | `loadbalance`  | [LoadBalance](./loadbalance/)   |
+| `masque`       | [MASQUE](./masque/)             |
 
 #### tag
 
@@ -51,3 +52,4 @@ The tag of the outbound.
 #### Outbounds that support IP connection
 
 * `WireGuard`
+* `MASQUE`
