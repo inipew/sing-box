@@ -8,6 +8,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/route/rule"
 	"github.com/sagernet/sing/common/logger"
+	M "github.com/sagernet/sing/common/metadata"
 
 	"github.com/stretchr/testify/require"
 )
@@ -143,3 +144,67 @@ www.example.org
 		}), domain)
 	}
 }
+
+func TestIPRules(t *testing.T) {
+	t.Parallel()
+	ruleString := `1.1.1.1
+10.0.0.0/24
+10.0.1.
+2001:db8::1
+2001:db8:1::/48
+1.1.1.2$important
+@@8.8.8.8
+@@9.9.9.9$important
+||107.148.45.21^
+`
+	rules, err := ToOptions(strings.NewReader(ruleString), logger.NOP())
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
+	rule, err := rule.NewHeadlessRule(context.Background(), rules[0])
+	require.NoError(t, err)
+
+	matchIPs := []string{
+		"1.1.1.1",
+		"1.1.1.2",
+		"10.0.0.5",
+		"10.0.1.5",
+		"2001:db8::1",
+		"2001:db8:1::5",
+		"107.148.45.21",
+	}
+	notMatchIPs := []string{
+		"1.1.1.3",
+		"10.0.2.5",
+		"8.8.8.8",
+		"9.9.9.9",
+		"107.148.45.22",
+	}
+
+	for _, ipStr := range matchIPs {
+		dest := M.ParseSocksaddr(ipStr)
+		require.True(t, rule.Match(&adapter.InboundContext{
+			Destination: dest,
+		}), ipStr)
+	}
+	for _, ipStr := range notMatchIPs {
+		dest := M.ParseSocksaddr(ipStr)
+		require.False(t, rule.Match(&adapter.InboundContext{
+			Destination: dest,
+		}), ipStr)
+	}
+
+	ruleFromOptions, err := FromOptions(rules)
+	require.NoError(t, err)
+	expectedDecompiled := `1.1.1.2$important
+@@9.9.9.9$important
+1.1.1.1
+10.0.0.0/24
+10.0.1.0/24
+2001:db8::1
+2001:db8:1::/48
+107.148.45.21
+@@8.8.8.8
+`
+	require.Equal(t, expectedDecompiled, string(ruleFromOptions))
+}
+

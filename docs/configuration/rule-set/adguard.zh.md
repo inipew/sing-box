@@ -42,7 +42,7 @@ AdGuard 将所有规则保存在内存中并按顺序匹配，
 |-------------|--------------------------|--------------------------|
 | Scheme      | `https://`               | :material-alert: Ignored |
 | Domain Host | `example.org`            | :material-check:         |
-| IP Host     | `1.1.1.1`, `10.0.0.`     | :material-close:         |
+| IP Host     | `1.1.1.1`, `10.0.0.`     | :material-check:         |
 | Regexp      | `/regexp/`               | :material-check:         |
 | Port        | `example.org:80`         | :material-close:         |
 | Path        | `example.org/path/ad.js` | :material-close:         |
