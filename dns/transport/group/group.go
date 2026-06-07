@@ -56,12 +56,13 @@ type GroupTransport struct {
 	detour        string // optional: outbound tag to force for all member transports
 	hcOptions     *option.DNSGroupHealthCheckOptions
 
-	access   sync.RWMutex
-	members  []adapter.DNSTransport // resolved at Start
-	strategy strategySelector
-	rtt      *rttEstimator
-	hc       *healthChecker
-	started  bool
+	access        sync.RWMutex
+	members       []adapter.DNSTransport // resolved at Start
+	clonedMembers []adapter.DNSTransport // clones created by detour override, must be closed by group
+	strategy      strategySelector
+	rtt           *rttEstimator
+	hc            *healthChecker
+	started       bool
 }
 
 // RegisterTransport registers the group transport type with the DNS transport registry.
@@ -172,16 +173,19 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 	}
 
 	// Apply group-level detour override if configured.
+	var clonedMembers []adapter.DNSTransport
 	if t.detour != "" {
-		effective, err := t.wrapMembersWithDetour(members)
+		effective, cloned, err := t.wrapMembersWithDetour(members)
 		if err != nil {
 			return E.Cause(err, "dns group[", t.tag, "] detour override")
 		}
 		members = effective
+		clonedMembers = cloned
 	}
 
 	t.access.Lock()
 	t.members = members
+	t.clonedMembers = clonedMembers
 	t.strategy = strategy
 	t.started = true
 	t.access.Unlock()
@@ -204,27 +208,32 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 }
 
 // wrapMembersWithDetour returns clones of member transports with the group's
-// detour applied. Members that do not implement DNSTransportWithDialerOverride
-// (e.g. local, fakeip, hosts) are used as-is.
-func (t *GroupTransport) wrapMembersWithDetour(members []adapter.DNSTransport) ([]adapter.DNSTransport, error) {
+// detour applied, and the list of these clones so they can be closed later.
+func (t *GroupTransport) wrapMembersWithDetour(members []adapter.DNSTransport) (effective []adapter.DNSTransport, clonedMembers []adapter.DNSTransport, err error) {
 	outboundManager := service.FromContext[adapter.OutboundManager](t.ctx)
 	if outboundManager == nil {
-		return nil, E.New("OutboundManager not found in context; cannot apply detour")
+		return nil, nil, E.New("OutboundManager not found in context; cannot apply detour")
 	}
 	detourDialer := dialer.NewDetour(outboundManager, t.detour, false)
 	if err := dialer.InitializeDetour(detourDialer); err != nil {
-		return nil, E.Cause(err, "initialize detour ", t.detour)
+		return nil, nil, E.Cause(err, "initialize detour ", t.detour)
 	}
 
-	effective := make([]adapter.DNSTransport, len(members))
+	effective = make([]adapter.DNSTransport, len(members))
 	for i, m := range members {
 		if overridable, ok := m.(adapter.DNSTransportWithDialerOverride); ok {
+			existingDetour := dialer.DetourTag(overridable.RawDialer())
+			if existingDetour != "" && existingDetour != t.detour {
+				t.logger.Warn("dns group[", t.tag, "] overrides detour ", existingDetour, " to ", t.detour, " for member ", m.Tag())
+			}
+
 			cloned := overridable.WithDialer(detourDialer)
 			// Initialize the cloned transport (calls dialer.InitializeDetour internally).
 			if err := cloned.Start(adapter.StartStateStart); err != nil {
-				return nil, E.Cause(err, "start cloned transport ", m.Tag())
+				return nil, nil, E.Cause(err, "start cloned transport ", m.Tag())
 			}
 			effective[i] = cloned
+			clonedMembers = append(clonedMembers, cloned)
 			t.logger.Debug("dns group[", t.tag, "] detour override applied to member: ", m.Tag())
 		} else {
 			// Non-network transports (local, hosts, fakeip) are used as-is.
@@ -232,18 +241,24 @@ func (t *GroupTransport) wrapMembersWithDetour(members []adapter.DNSTransport) (
 			t.logger.Debug("dns group[", t.tag, "] member ", m.Tag(), " does not support detour override, using as-is")
 		}
 	}
-	return effective, nil
+	return effective, clonedMembers, nil
 }
 
-// Close stops the health checker.
+// Close stops the health checker and closes any cloned members.
 func (t *GroupTransport) Close() error {
 	t.access.Lock()
 	t.started = false
 	hc := t.hc
 	t.hc = nil
+	clonedMembers := t.clonedMembers
+	t.clonedMembers = nil
 	t.access.Unlock()
+
 	if hc != nil {
 		hc.Close()
+	}
+	for _, m := range clonedMembers {
+		m.Close()
 	}
 	return nil
 }

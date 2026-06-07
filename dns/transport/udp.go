@@ -91,6 +91,11 @@ func (t *UDPTransport) Reset() {
 	t.multiplexer.Reset()
 }
 
+// RawDialer returns the original dialer.
+func (t *UDPTransport) RawDialer() N.Dialer {
+	return t.dialer
+}
+
 // WithDialer returns a clone of this transport using the given dialer.
 // Used by GroupTransport to apply group-level detour override.
 func (t *UDPTransport) WithDialer(d N.Dialer) adapter.DNSTransport {

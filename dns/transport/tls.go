@@ -102,6 +102,11 @@ func (t *TLSTransport) Reset() {
 	t.multiplexer.Reset()
 }
 
+// RawDialer returns the original dialer.
+func (t *TLSTransport) RawDialer() N.Dialer {
+	return t.rawDialer
+}
+
 // WithDialer returns a clone of this transport using the given dialer.
 // Used by GroupTransport to apply group-level detour override.
 func (t *TLSTransport) WithDialer(d N.Dialer) adapter.DNSTransport {

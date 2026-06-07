@@ -95,6 +95,11 @@ func (t *Transport) Reset() {
 	t.connection.Reset()
 }
 
+// RawDialer returns the original dialer.
+func (t *Transport) RawDialer() N.Dialer {
+	return t.dialer
+}
+
 // WithDialer returns a clone of this transport using the given dialer.
 // Used by GroupTransport to apply group-level detour override.
 func (t *Transport) WithDialer(d N.Dialer) adapter.DNSTransport {

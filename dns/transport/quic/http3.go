@@ -161,6 +161,11 @@ func (t *HTTP3Transport) Reset() {
 	t.transport = t.newTransport()
 }
 
+// RawDialer returns the original dialer.
+func (t *HTTP3Transport) RawDialer() N.Dialer {
+	return t.dialer
+}
+
 // WithDialer returns a clone of this transport using the given dialer.
 // Used by GroupTransport to apply group-level detour override.
 func (t *HTTP3Transport) WithDialer(d N.Dialer) adapter.DNSTransport {

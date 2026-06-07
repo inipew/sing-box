@@ -108,6 +108,7 @@ type DNSTransportWithSearchDomain interface {
 // cloned with a different dialer (e.g., for group-level detour override).
 type DNSTransportWithDialerOverride interface {
 	DNSTransport
+	RawDialer() N.Dialer
 	WithDialer(dialer N.Dialer) DNSTransport
 }
 // DNSTransportWithStats is optionally implemented by group transports that
