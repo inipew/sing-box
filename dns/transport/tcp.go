@@ -91,6 +91,16 @@ func (t *TCPTransport) Reset() {
 	t.multiplexer.Reset()
 }
 
+// WithDialer returns a clone of this transport using the given dialer.
+// Used by GroupTransport to apply group-level detour override.
+func (t *TCPTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
+	return &TCPTransport{
+		TransportAdapter: t.TransportAdapter,
+		dialer:           d,
+		serverAddr:       t.serverAddr,
+	}
+}
+
 func (t *TCPTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
 	return t.multiplexer.Exchange(ctx, message)
 }

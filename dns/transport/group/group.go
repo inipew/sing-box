@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/common/dialer"
 	dnscore "github.com/sagernet/sing-box/dns"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
@@ -52,6 +53,7 @@ type GroupTransport struct {
 	mode          dispatchMode
 	fallbackDelay time.Duration
 	maxRetries    int
+	detour        string // optional: outbound tag to force for all member transports
 	hcOptions     *option.DNSGroupHealthCheckOptions
 
 	access   sync.RWMutex
@@ -116,6 +118,7 @@ func NewGroupTransport(ctx context.Context, logger log.ContextLogger, tag string
 		mode:          mode,
 		fallbackDelay: fd,
 		maxRetries:    options.MaxRetries,
+		detour:        options.Detour,
 		hcOptions:     options.HealthCheck,
 		rtt:           newRTTEstimator(sampleSize),
 	}, nil
@@ -168,6 +171,15 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 		return E.Cause(err, "dns group[", t.tag, "]")
 	}
 
+	// Apply group-level detour override if configured.
+	if t.detour != "" {
+		effective, err := t.wrapMembersWithDetour(members)
+		if err != nil {
+			return E.Cause(err, "dns group[", t.tag, "] detour override")
+		}
+		members = effective
+	}
+
 	t.access.Lock()
 	t.members = members
 	t.strategy = strategy
@@ -182,9 +194,45 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 	}
 
 	modeStr := [...]string{"sequential", "concurrent", "fallback"}[t.mode]
+	detourInfo := ""
+	if t.detour != "" {
+		detourInfo = ", detour=" + t.detour
+	}
 	t.logger.Info("dns group [", t.tag, "] started with ", len(members),
-		" members, strategy=", t.strategyName, ", mode=", modeStr)
+		" members, strategy=", t.strategyName, ", mode=", modeStr, detourInfo)
 	return nil
+}
+
+// wrapMembersWithDetour returns clones of member transports with the group's
+// detour applied. Members that do not implement DNSTransportWithDialerOverride
+// (e.g. local, fakeip, hosts) are used as-is.
+func (t *GroupTransport) wrapMembersWithDetour(members []adapter.DNSTransport) ([]adapter.DNSTransport, error) {
+	outboundManager := service.FromContext[adapter.OutboundManager](t.ctx)
+	if outboundManager == nil {
+		return nil, E.New("OutboundManager not found in context; cannot apply detour")
+	}
+	detourDialer := dialer.NewDetour(outboundManager, t.detour, false)
+	if err := dialer.InitializeDetour(detourDialer); err != nil {
+		return nil, E.Cause(err, "initialize detour ", t.detour)
+	}
+
+	effective := make([]adapter.DNSTransport, len(members))
+	for i, m := range members {
+		if overridable, ok := m.(adapter.DNSTransportWithDialerOverride); ok {
+			cloned := overridable.WithDialer(detourDialer)
+			// Initialize the cloned transport (calls dialer.InitializeDetour internally).
+			if err := cloned.Start(adapter.StartStateStart); err != nil {
+				return nil, E.Cause(err, "start cloned transport ", m.Tag())
+			}
+			effective[i] = cloned
+			t.logger.Debug("dns group[", t.tag, "] detour override applied to member: ", m.Tag())
+		} else {
+			// Non-network transports (local, hosts, fakeip) are used as-is.
+			effective[i] = m
+			t.logger.Debug("dns group[", t.tag, "] member ", m.Tag(), " does not support detour override, using as-is")
+		}
+	}
+	return effective, nil
 }
 
 // Close stops the health checker.
@@ -239,6 +287,13 @@ func (t *GroupTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS
 	default:
 		return t.exchangeSequential(ctx, message, selected, tagToTransport)
 	}
+}
+
+// ExchangeAsync executes the query asynchronously and calls the callback when done.
+func (t *GroupTransport) ExchangeAsync(ctx context.Context, message *mDNS.Msg, callback func(response *mDNS.Msg, err error)) {
+	go func() {
+		callback(t.Exchange(ctx, message))
+	}()
 }
 
 // exchangeSequential tries each selected server in order until one succeeds.

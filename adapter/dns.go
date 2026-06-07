@@ -10,10 +10,12 @@ import (
 	"github.com/sagernet/sing-box/option"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
+	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/service"
 
 	"github.com/miekg/dns"
 )
+
 
 type DNSRouter interface {
 	Lifecycle
@@ -102,6 +104,12 @@ type DNSTransportWithSearchDomain interface {
 	HasSearchDomain() bool
 }
 
+// DNSTransportWithDialerOverride is implemented by transports that can be
+// cloned with a different dialer (e.g., for group-level detour override).
+type DNSTransportWithDialerOverride interface {
+	DNSTransport
+	WithDialer(dialer N.Dialer) DNSTransport
+}
 // DNSTransportWithStats is optionally implemented by group transports that
 // track per-member latency and health metrics (e.g. for dashboard/API use).
 type DNSTransportWithStats interface {

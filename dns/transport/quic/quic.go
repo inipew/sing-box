@@ -95,6 +95,26 @@ func (t *Transport) Reset() {
 	t.connection.Reset()
 }
 
+// WithDialer returns a clone of this transport using the given dialer.
+// Used by GroupTransport to apply group-level detour override.
+func (t *Transport) WithDialer(d N.Dialer) adapter.DNSTransport {
+	return &Transport{
+		TransportAdapter: t.TransportAdapter,
+		dialer:           d,
+		serverAddr:       t.serverAddr,
+		tlsConfig:        t.tlsConfig,
+		connection: transport.NewConnPool(transport.ConnPoolOptions[*quic.Conn]{
+			Mode: transport.ConnPoolSingle,
+			IsAlive: func(conn *quic.Conn) bool {
+				return conn != nil && !common.Done(conn.Context())
+			},
+			Close: func(conn *quic.Conn, _ error) {
+				conn.CloseWithError(0, "")
+			},
+		}),
+	}
+}
+
 func (t *Transport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
 	var (
 		conn     *quic.Conn

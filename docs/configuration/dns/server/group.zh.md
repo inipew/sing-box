@@ -35,7 +35,31 @@ icon: material/server-network
 
 #### servers
 
-必填。成员 DNS 服务器的标签列表。
+必填
+
+此组包含的 DNS 服务器 tag 列表。
+
+限制：
+- 组内不能包含另一个组。
+- 组内不能包含 `fakeip` 类型的服务器。
+
+#### detour
+
+强制此组内所有支持网络连接的成员 transport 通过指定的出站 (outbound) tag 进行路由。成员 transport **无需**在自身配置中声明 `detour`。
+
+此功能允许同一组 DNS 服务器定义被多个使用不同代理的组复用：
+
+```json
+// 服务器仅定义一次，无需设置 detour
+{ "type": "https", "tag": "cf_doh",     "server": "1.1.1.1", "path": "/dns-query" },
+{ "type": "https", "tag": "google_doh", "server": "8.8.8.8", "path": "/dns-query" },
+
+// 通过不同代理复用相同服务器
+{ "type": "group", "tag": "dns_via_id", "servers": ["cf_doh", "google_doh"], "detour": "proxy-id" },
+{ "type": "group", "tag": "dns_via_sg", "servers": ["cf_doh", "google_doh"], "detour": "proxy-sg" }
+```
+
+> **注意**：`local`、`hosts`、`fakeip`、`dhcp` 类型的 transport 不使用网络 dialer，将直接使用而不受 `detour` 设置影响。
 
 #### strategy
 

@@ -35,7 +35,31 @@ icon: material/server-network
 
 #### servers
 
-Required. A list of tags of member DNS servers.
+Required.
+
+List of DNS server tags to include in this group.
+
+Restrictions:
+- A group cannot contain another group.
+- A group cannot contain a `fakeip` server.
+
+#### detour
+
+Forces all network-capable member transports in this group to route their connections through the specified outbound tag. Member transports do **not** need to declare their own `detour`.
+
+This allows the same bare server definitions to be reused across multiple groups that use different proxies:
+
+```json
+// Define servers ONCE without detour
+{ "type": "https", "tag": "cf_doh",     "server": "1.1.1.1", "path": "/dns-query" },
+{ "type": "https", "tag": "google_doh", "server": "8.8.8.8", "path": "/dns-query" },
+
+// Reuse same servers via different proxies
+{ "type": "group", "tag": "dns_via_id", "servers": ["cf_doh", "google_doh"], "detour": "proxy-id" },
+{ "type": "group", "tag": "dns_via_sg", "servers": ["cf_doh", "google_doh"], "detour": "proxy-sg" }
+```
+
+> **Note**: `local`, `hosts`, `fakeip`, and `dhcp` transport types do not use a network dialer and will be used as-is, unaffected by the `detour` setting.
 
 #### strategy
 

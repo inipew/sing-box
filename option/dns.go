@@ -270,6 +270,13 @@ type GroupDNSServerOptions struct {
 	// Servers lists the tags of member DNS transports.
 	Servers []string `json:"servers"`
 
+	// Detour forces all member transports in this group to route their
+	// network connections through the specified outbound tag.
+	// Member transports do NOT need to declare their own detour.
+	// This allows the same bare server definitions to be reused in multiple
+	// groups that route through different proxies.
+	Detour string `json:"detour,omitempty"`
+
 	// Strategy controls which server(s) are selected for each query.
 	// Values: "first", "random", "round_robin", "p2", "ph", "p<N>", "wp2" (default).
 	Strategy string `json:"strategy,omitempty"`
