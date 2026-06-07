@@ -97,6 +97,27 @@ type DNSTransportWithPreferredDomain interface {
 	PreferredDomain(domain string) bool
 }
 
+type DNSTransportWithSearchDomain interface {
+	DNSTransport
+	HasSearchDomain() bool
+}
+
+// DNSTransportWithStats is optionally implemented by group transports that
+// track per-member latency and health metrics (e.g. for dashboard/API use).
+type DNSTransportWithStats interface {
+	DNSTransport
+	// Stats returns a snapshot of RTT and health data for each member.
+	Stats() []DNSTransportMemberStats
+}
+
+// DNSTransportMemberStats holds a point-in-time snapshot of a group member's metrics.
+type DNSTransportMemberStats struct {
+	Tag           string
+	AverageRTTMs  float64
+	Failures      int
+	LastQueryTime time.Time
+}
+
 type DNSTransportRegistry interface {
 	option.DNSTransportOptionsRegistry
 	CreateDNSTransport(ctx context.Context, logger log.ContextLogger, tag string, transportType string, options any) (DNSTransport, error)

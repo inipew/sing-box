@@ -262,3 +262,41 @@ type MDNSDNSServerOptions struct {
 	LocalDNSServerOptions
 	Interface badoption.Listable[string] `json:"interface,omitempty"`
 }
+
+// GroupDNSServerOptions configures a virtual DNS transport that dispatches
+// queries across a pool of member transports using a pluggable strategy,
+// inspired by dnscrypt-proxy's lb_strategy system.
+type GroupDNSServerOptions struct {
+	// Servers lists the tags of member DNS transports.
+	Servers []string `json:"servers"`
+
+	// Strategy controls which server(s) are selected for each query.
+	// Values: "first", "random", "round_robin", "p2", "ph", "p<N>", "wp2" (default).
+	Strategy string `json:"strategy,omitempty"`
+
+	// Mode controls how queries are dispatched to selected servers.
+	// Values: "sequential" (default), "concurrent", "fallback".
+	Mode string `json:"mode,omitempty"`
+
+	// FallbackDelay is the delay before promoting fallback servers in "fallback" mode.
+	// Default: 300ms (happy-eyeballs style).
+	FallbackDelay badoption.Duration `json:"fallback_delay,omitempty"`
+
+	// MaxRetries is the maximum number of servers to try in "sequential" mode
+	// before returning an error. 0 means try all servers.
+	MaxRetries int `json:"max_retries,omitempty"`
+
+	// HealthCheck configures active latency probing.
+	// When omitted, only passive RTT measurement from real queries is used.
+	HealthCheck *DNSGroupHealthCheckOptions `json:"health_check,omitempty"`
+}
+
+// DNSGroupHealthCheckOptions configures active latency probing for group members.
+type DNSGroupHealthCheckOptions struct {
+	// Interval between health-check probes. Default: 10m.
+	Interval badoption.Duration `json:"interval,omitempty"`
+	// Timeout for each probe. Default: 5s.
+	Timeout badoption.Duration `json:"timeout,omitempty"`
+	// SampleSize is the number of recent RTT samples used for EWMA. Default: 10.
+	SampleSize int `json:"sample_size,omitempty"`
+}
