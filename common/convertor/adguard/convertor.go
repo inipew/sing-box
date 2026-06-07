@@ -20,12 +20,26 @@ import (
 type agdguardRuleLine struct {
 	ruleLine    string
 	isRawDomain bool
+	isIPCIDR    bool
 	isExclude   bool
 	isSuffix    bool
 	hasStart    bool
 	hasEnd      bool
 	isRegexp    bool
 	isImportant bool
+}
+
+func parseIPOrCIDR(s string) (string, bool) {
+	if prefix, err := netip.ParsePrefix(s); err == nil {
+		return prefix.String(), true
+	}
+	if addr, err := netip.ParseAddr(s); err == nil {
+		return addr.String(), true
+	}
+	if prefix, err := parseADGuardIPCIDRLine(s); err == nil {
+		return prefix.String(), true
+	}
+	return "", false
 }
 
 func ToOptions(reader io.Reader, logger logger.Logger) ([]option.HeadlessRule, error) {
@@ -44,6 +58,23 @@ parseLine:
 			continue
 		}
 		originRuleLine := ruleLine
+		tmpRuleLine := ruleLine
+		tmpRuleLine = strings.TrimSuffix(tmpRuleLine, "|")
+		if strings.HasPrefix(tmpRuleLine, "||") {
+			tmpRuleLine = tmpRuleLine[2:]
+		} else if strings.HasPrefix(tmpRuleLine, "|") {
+			tmpRuleLine = tmpRuleLine[1:]
+		}
+		if strings.HasSuffix(tmpRuleLine, "^") {
+			tmpRuleLine = tmpRuleLine[:len(tmpRuleLine)-1]
+		}
+		if ipStr, ok := parseIPOrCIDR(tmpRuleLine); ok {
+			ruleLines = append(ruleLines, agdguardRuleLine{
+				ruleLine: ipStr,
+				isIPCIDR: true,
+			})
+			continue
+		}
 		if M.IsDomainName(ruleLine) {
 			ruleLines = append(ruleLines, agdguardRuleLine{
 				ruleLine:    ruleLine,
@@ -103,6 +134,25 @@ parseLine:
 		if strings.HasPrefix(ruleLine, "@@") {
 			ruleLine = ruleLine[2:]
 			isExclude = true
+		}
+		tmpRuleLine = ruleLine
+		tmpRuleLine = strings.TrimSuffix(tmpRuleLine, "|")
+		if strings.HasPrefix(tmpRuleLine, "||") {
+			tmpRuleLine = tmpRuleLine[2:]
+		} else if strings.HasPrefix(tmpRuleLine, "|") {
+			tmpRuleLine = tmpRuleLine[1:]
+		}
+		if strings.HasSuffix(tmpRuleLine, "^") {
+			tmpRuleLine = tmpRuleLine[:len(tmpRuleLine)-1]
+		}
+		if ipStr, ok := parseIPOrCIDR(tmpRuleLine); ok {
+			ruleLines = append(ruleLines, agdguardRuleLine{
+				ruleLine:    ipStr,
+				isIPCIDR:    true,
+				isExclude:   isExclude,
+				isImportant: isImportant,
+			})
+			continue
 		}
 		ruleLine = strings.TrimSuffix(ruleLine, "|")
 		if strings.HasPrefix(ruleLine, "||") {
@@ -220,22 +270,29 @@ parseLine:
 		return ruleLine
 	}
 
-	importantDomain := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return it.isImportant && !it.isRegexp && !it.isExclude }), mapDomain)
-	importantDomainRegex := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return it.isImportant && it.isRegexp && !it.isExclude }), mapDomain)
-	importantExcludeDomain := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return it.isImportant && !it.isRegexp && it.isExclude }), mapDomain)
-	importantExcludeDomainRegex := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return it.isImportant && it.isRegexp && it.isExclude }), mapDomain)
-	domain := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return !it.isImportant && !it.isRegexp && !it.isExclude }), mapDomain)
-	domainRegex := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return !it.isImportant && it.isRegexp && !it.isExclude }), mapDomain)
-	excludeDomain := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return !it.isImportant && !it.isRegexp && it.isExclude }), mapDomain)
-	excludeDomainRegex := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return !it.isImportant && it.isRegexp && it.isExclude }), mapDomain)
+	importantDomain := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return it.isImportant && !it.isRegexp && !it.isExclude && !it.isIPCIDR }), mapDomain)
+	importantDomainRegex := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return it.isImportant && it.isRegexp && !it.isExclude && !it.isIPCIDR }), mapDomain)
+	importantExcludeDomain := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return it.isImportant && !it.isRegexp && it.isExclude && !it.isIPCIDR }), mapDomain)
+	importantExcludeDomainRegex := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return it.isImportant && it.isRegexp && it.isExclude && !it.isIPCIDR }), mapDomain)
+	domain := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return !it.isImportant && !it.isRegexp && !it.isExclude && !it.isIPCIDR }), mapDomain)
+	domainRegex := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return !it.isImportant && it.isRegexp && !it.isExclude && !it.isIPCIDR }), mapDomain)
+	excludeDomain := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return !it.isImportant && !it.isRegexp && it.isExclude && !it.isIPCIDR }), mapDomain)
+	excludeDomainRegex := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return !it.isImportant && it.isRegexp && it.isExclude && !it.isIPCIDR }), mapDomain)
+
+	importantIPCIDR := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return it.isImportant && it.isIPCIDR && !it.isExclude }), func(it agdguardRuleLine) string { return it.ruleLine })
+	importantExcludeIPCIDR := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return it.isImportant && it.isIPCIDR && it.isExclude }), func(it agdguardRuleLine) string { return it.ruleLine })
+	ipCIDR := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return !it.isImportant && it.isIPCIDR && !it.isExclude }), func(it agdguardRuleLine) string { return it.ruleLine })
+	excludeIPCIDR := common.Map(common.Filter(ruleLines, func(it agdguardRuleLine) bool { return !it.isImportant && it.isIPCIDR && it.isExclude }), func(it agdguardRuleLine) string { return it.ruleLine })
+
 	currentRule := option.HeadlessRule{
 		Type: C.RuleTypeDefault,
 		DefaultOptions: option.DefaultHeadlessRule{
 			AdGuardDomain: domain,
 			DomainRegex:   domainRegex,
+			IPCIDR:        ipCIDR,
 		},
 	}
-	if len(excludeDomain) > 0 || len(excludeDomainRegex) > 0 {
+	if len(excludeDomain) > 0 || len(excludeDomainRegex) > 0 || len(excludeIPCIDR) > 0 {
 		currentRule = option.HeadlessRule{
 			Type: C.RuleTypeLogical,
 			LogicalOptions: option.LogicalHeadlessRule{
@@ -246,6 +303,7 @@ parseLine:
 						DefaultOptions: option.DefaultHeadlessRule{
 							AdGuardDomain: excludeDomain,
 							DomainRegex:   excludeDomainRegex,
+							IPCIDR:        excludeIPCIDR,
 							Invert:        true,
 						},
 					},
@@ -254,7 +312,7 @@ parseLine:
 			},
 		}
 	}
-	if len(importantDomain) > 0 || len(importantDomainRegex) > 0 {
+	if len(importantDomain) > 0 || len(importantDomainRegex) > 0 || len(importantIPCIDR) > 0 {
 		currentRule = option.HeadlessRule{
 			Type: C.RuleTypeLogical,
 			LogicalOptions: option.LogicalHeadlessRule{
@@ -265,6 +323,7 @@ parseLine:
 						DefaultOptions: option.DefaultHeadlessRule{
 							AdGuardDomain: importantDomain,
 							DomainRegex:   importantDomainRegex,
+							IPCIDR:        importantIPCIDR,
 						},
 					},
 					currentRule,
@@ -272,7 +331,7 @@ parseLine:
 			},
 		}
 	}
-	if len(importantExcludeDomain) > 0 || len(importantExcludeDomainRegex) > 0 {
+	if len(importantExcludeDomain) > 0 || len(importantExcludeDomainRegex) > 0 || len(importantExcludeIPCIDR) > 0 {
 		currentRule = option.HeadlessRule{
 			Type: C.RuleTypeLogical,
 			LogicalOptions: option.LogicalHeadlessRule{
@@ -283,6 +342,7 @@ parseLine:
 						DefaultOptions: option.DefaultHeadlessRule{
 							AdGuardDomain: importantExcludeDomain,
 							DomainRegex:   importantExcludeDomainRegex,
+							IPCIDR:        importantExcludeIPCIDR,
 							Invert:        true,
 						},
 					},
@@ -307,12 +367,16 @@ func FromOptions(rules []option.HeadlessRule) ([]byte, error) {
 	var (
 		importantDomain             []string
 		importantDomainRegex        []string
+		importantIPCIDR             []string
 		importantExcludeDomain      []string
 		importantExcludeDomainRegex []string
+		importantExcludeIPCIDR      []string
 		domain                      []string
 		domainRegex                 []string
+		ipCIDR                      []string
 		excludeDomain               []string
 		excludeDomainRegex          []string
+		excludeIPCIDR               []string
 	)
 parse:
 	for {
@@ -322,23 +386,26 @@ parse:
 				return nil, ErrInvalid
 			}
 			if rule.LogicalOptions.Mode == C.LogicalTypeAnd && rule.LogicalOptions.Rules[0].DefaultOptions.Invert {
-				if len(importantExcludeDomain) == 0 && len(importantExcludeDomainRegex) == 0 {
+				if len(importantExcludeDomain) == 0 && len(importantExcludeDomainRegex) == 0 && len(importantExcludeIPCIDR) == 0 {
 					importantExcludeDomain = rule.LogicalOptions.Rules[0].DefaultOptions.AdGuardDomain
 					importantExcludeDomainRegex = rule.LogicalOptions.Rules[0].DefaultOptions.DomainRegex
-					if len(importantExcludeDomain)+len(importantExcludeDomainRegex) == 0 {
+					importantExcludeIPCIDR = rule.LogicalOptions.Rules[0].DefaultOptions.IPCIDR
+					if len(importantExcludeDomain)+len(importantExcludeDomainRegex)+len(importantExcludeIPCIDR) == 0 {
 						return nil, ErrInvalid
 					}
 				} else {
 					excludeDomain = rule.LogicalOptions.Rules[0].DefaultOptions.AdGuardDomain
 					excludeDomainRegex = rule.LogicalOptions.Rules[0].DefaultOptions.DomainRegex
-					if len(excludeDomain)+len(excludeDomainRegex) == 0 {
+					excludeIPCIDR = rule.LogicalOptions.Rules[0].DefaultOptions.IPCIDR
+					if len(excludeDomain)+len(excludeDomainRegex)+len(excludeIPCIDR) == 0 {
 						return nil, ErrInvalid
 					}
 				}
 			} else if rule.LogicalOptions.Mode == C.LogicalTypeOr && !rule.LogicalOptions.Rules[0].DefaultOptions.Invert {
 				importantDomain = rule.LogicalOptions.Rules[0].DefaultOptions.AdGuardDomain
 				importantDomainRegex = rule.LogicalOptions.Rules[0].DefaultOptions.DomainRegex
-				if len(importantDomain)+len(importantDomainRegex) == 0 {
+				importantIPCIDR = rule.LogicalOptions.Rules[0].DefaultOptions.IPCIDR
+				if len(importantDomain)+len(importantDomainRegex)+len(importantIPCIDR) == 0 {
 					return nil, ErrInvalid
 				}
 			} else {
@@ -348,7 +415,8 @@ parse:
 		case C.RuleTypeDefault:
 			domain = rule.DefaultOptions.AdGuardDomain
 			domainRegex = rule.DefaultOptions.DomainRegex
-			if len(domain)+len(domainRegex) == 0 {
+			ipCIDR = rule.DefaultOptions.IPCIDR
+			if len(domain)+len(domainRegex)+len(ipCIDR) == 0 {
 				return nil, ErrInvalid
 			}
 			break parse
@@ -363,7 +431,10 @@ parse:
 		output.WriteString("/")
 		output.WriteString(ruleLine)
 		output.WriteString("/$important\n")
-
+	}
+	for _, ruleLine := range importantIPCIDR {
+		output.WriteString(ruleLine)
+		output.WriteString("$important\n")
 	}
 	for _, ruleLine := range importantExcludeDomain {
 		output.WriteString("@@")
@@ -375,6 +446,11 @@ parse:
 		output.WriteString(ruleLine)
 		output.WriteString("/$important\n")
 	}
+	for _, ruleLine := range importantExcludeIPCIDR {
+		output.WriteString("@@")
+		output.WriteString(ruleLine)
+		output.WriteString("$important\n")
+	}
 	for _, ruleLine := range domain {
 		output.WriteString(ruleLine)
 		output.WriteString("\n")
@@ -383,6 +459,10 @@ parse:
 		output.WriteString("/")
 		output.WriteString(ruleLine)
 		output.WriteString("/\n")
+	}
+	for _, ruleLine := range ipCIDR {
+		output.WriteString(ruleLine)
+		output.WriteString("\n")
 	}
 	for _, ruleLine := range excludeDomain {
 		output.WriteString("@@")
@@ -393,6 +473,11 @@ parse:
 		output.WriteString("@@/")
 		output.WriteString(ruleLine)
 		output.WriteString("/\n")
+	}
+	for _, ruleLine := range excludeIPCIDR {
+		output.WriteString("@@")
+		output.WriteString(ruleLine)
+		output.WriteString("\n")
 	}
 	return output.Bytes(), nil
 }
@@ -452,3 +537,4 @@ func parseADGuardIPCIDRLine(ruleLine string) (netip.Prefix, error) {
 	}
 	return netip.PrefixFrom(netip.AddrFrom4([4]byte(ruleParts)), bitLen), nil
 }
+
