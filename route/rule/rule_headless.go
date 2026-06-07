@@ -208,18 +208,51 @@ func NewDefaultHeadlessRule(ctx context.Context, options option.DefaultHeadlessR
 		rule.destinationAddressItems = append(rule.destinationAddressItems, item)
 		rule.allItems = append(rule.allItems, item)
 	}
-	switch true {
-	case len(rule.allItems) == len(rule.destinationAddressItems)+len(rule.destinationIPCIDRItems):
-		rule.ruleCount = uint64(len(rule.destinationAddressItems) + len(rule.destinationIPCIDRItems))
-	case len(rule.allItems) == len(rule.sourceAddressItems):
-		rule.ruleCount = uint64(len(rule.sourceAddressItems))
-	case len(rule.allItems) == len(rule.sourcePortItems):
-		rule.ruleCount = uint64(len(rule.sourcePortItems))
-	case len(rule.allItems) == len(rule.destinationPortItems):
-		rule.ruleCount = uint64(len(rule.destinationPortItems))
-	default:
-		rule.ruleCount = 1
+	var ruleCount uint64
+	ruleCount += uint64(len(options.QueryType))
+	ruleCount += uint64(len(options.Network))
+	ruleCount += uint64(len(options.Domain))
+	ruleCount += uint64(len(options.DomainSuffix))
+	ruleCount += uint64(len(options.DomainKeyword))
+	ruleCount += uint64(len(options.DomainRegex))
+	ruleCount += uint64(len(options.SourceIPCIDR))
+	ruleCount += uint64(len(options.IPCIDR))
+	ruleCount += uint64(len(options.SourcePort))
+	ruleCount += uint64(len(options.SourcePortRange))
+	ruleCount += uint64(len(options.Port))
+	ruleCount += uint64(len(options.PortRange))
+	ruleCount += uint64(len(options.ProcessName))
+	ruleCount += uint64(len(options.ProcessPath))
+	ruleCount += uint64(len(options.ProcessPathRegex))
+	ruleCount += uint64(len(options.PackageName))
+	ruleCount += uint64(len(options.PackageNameRegex))
+	ruleCount += uint64(len(options.NetworkType))
+	ruleCount += uint64(len(options.WIFISSID))
+	ruleCount += uint64(len(options.WIFIBSSID))
+	ruleCount += uint64(len(options.AdGuardDomain))
+	ruleCount += uint64(len(options.DefaultInterfaceAddress))
+	if options.NetworkInterfaceAddress != nil {
+		for _, listable := range options.NetworkInterfaceAddress.Values() {
+			ruleCount += uint64(len(listable))
+		}
 	}
+	if options.DomainMatcher != nil {
+		domains, suffixes := options.DomainMatcher.Dump()
+		ruleCount += uint64(len(domains) + len(suffixes))
+	}
+	if options.SourceIPSet != nil {
+		ruleCount += uint64(len(options.SourceIPSet.Prefixes()))
+	}
+	if options.IPSet != nil {
+		ruleCount += uint64(len(options.IPSet.Prefixes()))
+	}
+	if options.AdGuardDomainMatcher != nil {
+		ruleCount += uint64(len(options.AdGuardDomainMatcher.Dump()))
+	}
+	if ruleCount == 0 {
+		ruleCount = 1
+	}
+	rule.ruleCount = ruleCount
 	return rule, nil
 }
 
@@ -249,13 +282,18 @@ func NewLogicalHeadlessRule(ctx context.Context, options option.LogicalHeadlessR
 	default:
 		return nil, E.New("unknown logical mode: ", options.Mode)
 	}
+	var ruleCount uint64
 	for i, subRule := range options.Rules {
 		rule, err := NewHeadlessRule(ctx, subRule)
 		if err != nil {
 			return nil, E.Cause(err, "sub rule[", i, "]")
 		}
 		r.rules[i] = rule
+		ruleCount += rule.RuleCount()
 	}
-	r.ruleCount = 1
+	if ruleCount == 0 {
+		ruleCount = 1
+	}
+	r.ruleCount = ruleCount
 	return r, nil
 }
