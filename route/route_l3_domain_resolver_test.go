@@ -178,6 +178,10 @@ func (r *testL3Rule) Match(*adapter.InboundContext) bool {
 	return true
 }
 
+func (r *testL3Rule) RuleCount() uint64 {
+	return 1
+}
+
 func (r *testL3Rule) Disabled() bool {
 	return false
 }

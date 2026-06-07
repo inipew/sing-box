@@ -97,6 +97,12 @@ func (s *LocalRuleSet) ProviderInfo() adapter.RuleSetProviderInfo {
 	}
 }
 
+func (s *LocalRuleSet) RuleCount() uint64 {
+	s.access.RLock()
+	defer s.access.RUnlock()
+	return s.ruleCount
+}
+
 func (s *LocalRuleSet) Update(context.Context) error {
 	return nil
 }
@@ -158,11 +164,13 @@ func (s *LocalRuleSet) reloadRules(headlessRules []option.HeadlessRule) error {
 func (s *LocalRuleSet) reloadRulesAt(headlessRules []option.HeadlessRule, updatedAt time.Time) error {
 	rules := make([]adapter.HeadlessRule, len(headlessRules))
 	var err error
+	var ruleCount uint64
 	for i, ruleOptions := range headlessRules {
 		rules[i], err = NewHeadlessRule(s.ctx, ruleOptions)
 		if err != nil {
 			return E.Cause(err, "parse rule_set.rules.[", i, "]")
 		}
+		ruleCount += rules[i].RuleCount()
 	}
 	metadata := buildRuleSetMetadata(headlessRules)
 	err = validateRuleSetMetadataUpdate(s.ctx, s.tag, metadata)
@@ -172,7 +180,7 @@ func (s *LocalRuleSet) reloadRulesAt(headlessRules []option.HeadlessRule, update
 	s.access.Lock()
 	s.rules = rules
 	s.metadata = metadata
-	s.ruleCount = uint64(len(headlessRules))
+	s.ruleCount = ruleCount
 	s.lastUpdated = updatedAt
 	callbacks := s.callbacks.Array()
 	s.access.Unlock()

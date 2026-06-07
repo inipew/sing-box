@@ -88,6 +88,8 @@ func (s *countingRuleSet) Close() error                                         
 
 func (s *countingRuleSet) Match(*adapter.InboundContext) bool { return true }
 
+func (s *countingRuleSet) RuleCount() uint64 { return 0 }
+
 func (s *countingRuleSet) String() string { return s.name }
 
 func (s *countingRuleSet) RefCount() int32 { return s.refs.Load() }

@@ -72,6 +72,10 @@ func (f *fakeRuleSet) String() string {
 	return "fake-rule-set"
 }
 
+func (f *fakeRuleSet) RuleCount() uint64 {
+	return 0
+}
+
 type fakeRuleItem struct {
 	matched bool
 }

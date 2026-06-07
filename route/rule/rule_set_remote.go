@@ -101,6 +101,12 @@ func (s *RemoteRuleSet) ProviderInfo() adapter.RuleSetProviderInfo {
 	}
 }
 
+func (s *RemoteRuleSet) RuleCount() uint64 {
+	s.access.RLock()
+	defer s.access.RUnlock()
+	return s.ruleCount
+}
+
 func (s *RemoteRuleSet) Update(ctx context.Context) error {
 	s.updateAccess.Lock()
 	defer s.updateAccess.Unlock()
@@ -232,11 +238,13 @@ func (s *RemoteRuleSet) loadBytes(content []byte) error {
 		return err
 	}
 	rules := make([]adapter.HeadlessRule, len(plainRuleSet.Rules))
+	var ruleCount uint64
 	for i, ruleOptions := range plainRuleSet.Rules {
 		rules[i], err = NewHeadlessRule(s.ctx, ruleOptions)
 		if err != nil {
 			return E.Cause(err, "parse rule_set.rules.[", i, "]")
 		}
+		ruleCount += rules[i].RuleCount()
 	}
 	metadata := buildRuleSetMetadata(plainRuleSet.Rules)
 	err = validateRuleSetMetadataUpdate(s.ctx, s.tag, metadata)
@@ -246,7 +254,7 @@ func (s *RemoteRuleSet) loadBytes(content []byte) error {
 	s.access.Lock()
 	s.metadata = metadata
 	s.rules = rules
-	s.ruleCount = uint64(len(plainRuleSet.Rules))
+	s.ruleCount = ruleCount
 	callbacks := s.callbacks.Array()
 	s.access.Unlock()
 	for _, callback := range callbacks {
