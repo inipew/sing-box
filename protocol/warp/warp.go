@@ -102,8 +102,11 @@ func NewWarp(ctx context.Context, router adapter.Router, logger log.ContextLogge
 func (s *Warp) Start(stage adapter.StartStage) error {
 	switch stage {
 	case adapter.StartStateInitialize:
-		return s.initialize()
+		return nil
 	case adapter.StartStateStart:
+		if err := s.initialize(); err != nil {
+			return err
+		}
 		return s.endpoint.Start(false)
 	case adapter.StartStatePostStart:
 		err := s.endpoint.Start(true)
@@ -116,10 +119,10 @@ func (s *Warp) Start(stage adapter.StartStage) error {
 }
 
 // initialize resolves the WARP profile (from cache, file, or Cloudflare API)
-// and constructs the underlying WireGuard endpoint. It runs during
-// StartStateInitialize so that network access is deferred until sing-box
-// is fully initialized, avoiding failures when the network is not yet ready
-// at construction time.
+// and constructs the underlying WireGuard endpoint. It is called during
+// StartStateStart, after the DNS Transport Manager has been fully started,
+// so that DNS lookups required by the HTTP client (e.g. api.cloudflareclient.com)
+// can be served by GroupTransport without hitting a "not started" error.
 func (s *Warp) initialize() error {
 	options := s.options
 

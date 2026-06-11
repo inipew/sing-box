@@ -585,7 +585,10 @@ func (s *Box) preStart() error {
 	if err != nil {
 		return err
 	}
-	err = adapter.Start(s.logger, adapter.StartStateStart, s.outbound, s.dnsTransport, s.network, s.connection)
+	// dnsTransport must start before outbound so that DNS transports (including
+	// GroupTransport members) are fully ready when outbounds such as warp perform
+	// DNS lookups during their StartStateStart initialization phase.
+	err = adapter.Start(s.logger, adapter.StartStateStart, s.dnsTransport, s.outbound, s.network, s.connection)
 	if err != nil {
 		return err
 	}
