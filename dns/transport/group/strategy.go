@@ -25,12 +25,15 @@ type strategySelector interface {
 
 // appendRemaining appends all elements of full that are not already in result.
 func appendRemaining(result []string, full []string) []string {
-	inResult := make(map[string]bool, len(result))
-	for _, t := range result {
-		inResult[t] = true
-	}
 	for _, t := range full {
-		if !inResult[t] {
+		found := false
+		for _, r := range result {
+			if t == r {
+				found = true
+				break
+			}
+		}
+		if !found {
 			result = append(result, t)
 		}
 	}
@@ -66,7 +69,8 @@ func (s strategyWP2) Select(tags []string, rtt *rttEstimator) []string {
 	} else {
 		primary, secondary = sorted[j], sorted[i]
 	}
-	result := []string{primary, secondary}
+	result := make([]string, 0, len(sorted))
+	result = append(result, primary, secondary)
 	return appendRemaining(result, sorted)
 }
 
@@ -93,7 +97,8 @@ func (s strategyRandom) Select(tags []string, rtt *rttEstimator) []string {
 		return nil
 	}
 	idx := rand.IntN(len(tags))
-	result := []string{tags[idx]}
+	result := make([]string, 0, len(tags))
+	result = append(result, tags[idx])
 	return appendRemaining(result, tags)
 }
 
@@ -110,7 +115,8 @@ func (s *strategyRoundRobin) Select(tags []string, rtt *rttEstimator) []string {
 		return nil
 	}
 	idx := int(s.counter.Add(1)-1) % len(tags)
-	result := []string{tags[idx]}
+	result := make([]string, 0, len(tags))
+	result = append(result, tags[idx])
 	return appendRemaining(result, tags)
 }
 
@@ -139,7 +145,8 @@ func (s *strategyPN) Select(tags []string, rtt *rttEstimator) []string {
 	}
 	// Pick one random server from the top-N as primary.
 	idx := rand.IntN(n)
-	result := []string{sorted[idx]}
+	result := make([]string, 0, len(sorted))
+	result = append(result, sorted[idx])
 	return appendRemaining(result, sorted)
 }
 

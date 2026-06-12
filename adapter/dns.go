@@ -119,10 +119,10 @@ type DNSTransportWithStats interface {
 	Stats() []DNSTransportMemberStats
 }
 
-// DNSTransportMemberStats holds a point-in-time snapshot of a group member's metrics.
 type DNSTransportMemberStats struct {
 	Tag           string
 	AverageRTTMs  float64
+	JitterMs      float64
 	Failures      int
 	LastQueryTime time.Time
 }

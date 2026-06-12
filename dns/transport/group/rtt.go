@@ -23,6 +23,7 @@ type rttEstimator struct {
 
 type rttEntry struct {
 	ewma          float64   // milliseconds, EWMA; 0 means no sample yet
+	jitter        float64   // milliseconds, EWMA of absolute deviation
 	samples       int       // total samples recorded
 	failures      int       // consecutive failure count (reset on success)
 	totalFailures int       // lifetime failure count
@@ -52,7 +53,10 @@ func (e *rttEstimator) Record(tag string, rtt time.Duration) {
 	entry := e.getOrCreate(tag)
 	if entry.samples == 0 || entry.ewma == 0 {
 		entry.ewma = ms
+		entry.jitter = ms / 2.0 // Initialize jitter estimate
 	} else {
+		diff := ms - entry.ewma
+		entry.jitter = e.alpha*math.Abs(diff) + (1-e.alpha)*entry.jitter
 		entry.ewma = e.alpha*ms + (1-e.alpha)*entry.ewma
 	}
 	entry.samples++
@@ -89,7 +93,7 @@ func (e *rttEstimator) Sorted(tags []string) []string {
 	// snapshot to avoid holding lock during sort
 	type snapshot struct {
 		tag      string
-		ewma     float64
+		score    float64
 		failures int
 		hasSample bool
 	}
@@ -97,11 +101,11 @@ func (e *rttEstimator) Sorted(tags []string) []string {
 	for i, tag := range tags {
 		entry, ok := e.entries[tag]
 		if !ok {
-			snaps[i] = snapshot{tag: tag, ewma: math.MaxFloat64, hasSample: false}
+			snaps[i] = snapshot{tag: tag, score: math.MaxFloat64, hasSample: false}
 		} else {
 			snaps[i] = snapshot{
 				tag:       tag,
-				ewma:      entry.ewma,
+				score:     entry.ewma + (2.0 * entry.jitter),
 				failures:  entry.failures,
 				hasSample: entry.samples > 0,
 			}
@@ -121,7 +125,7 @@ func (e *rttEstimator) Sorted(tags []string) []string {
 		if a.hasSample != b.hasSample {
 			return !a.hasSample
 		}
-		return a.ewma < b.ewma
+		return a.score < b.score
 	})
 
 	sorted := make([]string, len(snaps))

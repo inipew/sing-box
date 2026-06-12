@@ -15,6 +15,7 @@ import (
 	"github.com/sagernet/sing-box/option"
 	C "github.com/sagernet/sing-box/constant"
 	E "github.com/sagernet/sing/common/exceptions"
+	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/service"
 
 	mDNS "github.com/miekg/dns"
@@ -38,8 +39,9 @@ const (
 )
 
 var (
-	_ adapter.DNSTransport          = (*GroupTransport)(nil)
-	_ adapter.DNSTransportWithStats = (*GroupTransport)(nil)
+	_ adapter.DNSTransport                   = (*GroupTransport)(nil)
+	_ adapter.DNSTransportWithStats          = (*GroupTransport)(nil)
+	_ adapter.DNSTransportWithDialerOverride = (*GroupTransport)(nil)
 )
 
 // GroupTransport is a virtual DNS transport that dispatches queries across
@@ -261,6 +263,34 @@ func (t *GroupTransport) Close() error {
 		m.Close()
 	}
 	return nil
+}
+
+// RawDialer returns a dummy dialer containing the group's detour tag, if any.
+// This allows parent groups to detect our detour override.
+func (t *GroupTransport) RawDialer() N.Dialer {
+	if t.detour == "" {
+		return nil
+	}
+	return dialer.NewDetour(nil, t.detour, false)
+}
+
+// WithDialer returns a clone of this group transport that will propagate
+// the new detour override to all its members when started.
+func (t *GroupTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
+	clone := *t
+	clone.detour = dialer.DetourTag(d)
+	// Reset runtime state so it can be safely Started again
+	clone.access = sync.RWMutex{}
+	clone.members = nil
+	clone.clonedMembers = nil
+	clone.hc = nil
+	clone.started = false
+	sampleSize := 0
+	if clone.hcOptions != nil {
+		sampleSize = clone.hcOptions.SampleSize
+	}
+	clone.rtt = newRTTEstimator(sampleSize)
+	return &clone
 }
 
 // ---- Core dispatch ----
@@ -517,6 +547,7 @@ func (t *GroupTransport) Stats() []adapter.DNSTransportMemberStats {
 			stats[i] = adapter.DNSTransportMemberStats{
 				Tag:           m.Tag(),
 				AverageRTTMs:  entry.ewma,
+				JitterMs:      entry.jitter,
 				Failures:      entry.totalFailures,
 				LastQueryTime: entry.lastQueryTime,
 			}
