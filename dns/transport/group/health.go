@@ -21,26 +21,25 @@ const (
 	healthCheckQuery = "."
 )
 
-// healthChecker runs periodic active probes to all member transports and
-// records RTT results into the shared rttEstimator.
-// It is only instantiated when the user configures health_check.
-type healthChecker struct {
+// HealthChecker runs periodic active probes to all member transports and
+// records RTT results into the shared RTTEstimator.
+type HealthChecker struct {
 	members  []adapter.DNSTransport
 	interval time.Duration
 	timeout  time.Duration
-	rtt      *rttEstimator
+	rtt      RTTEstimator
 	logger   log.ContextLogger
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
 
-func newHealthChecker(
+func NewHealthChecker(
 	parentCtx context.Context,
 	members []adapter.DNSTransport,
 	opts *option.DNSGroupHealthCheckOptions,
-	rtt *rttEstimator,
+	rtt RTTEstimator,
 	logger log.ContextLogger,
-) *healthChecker {
+) *HealthChecker {
 	interval := time.Duration(opts.Interval)
 	if interval == 0 {
 		interval = defaultHealthCheckInterval
@@ -50,7 +49,7 @@ func newHealthChecker(
 		timeout = defaultHealthCheckTimeout
 	}
 	ctx, cancel := context.WithCancel(parentCtx)
-	return &healthChecker{
+	return &HealthChecker{
 		members:  members,
 		interval: interval,
 		timeout:  timeout,
@@ -62,16 +61,16 @@ func newHealthChecker(
 }
 
 // Start launches the background health-check goroutine.
-func (h *healthChecker) Start() {
+func (h *HealthChecker) Start() {
 	go h.loop()
 }
 
 // Close stops the background health-check goroutine.
-func (h *healthChecker) Close() {
+func (h *HealthChecker) Close() {
 	h.cancel()
 }
 
-func (h *healthChecker) loop() {
+func (h *HealthChecker) loop() {
 	// Small initial delay so we don't hit the network at startup before
 	// connections are warmed up.
 	timer := time.NewTimer(5 * time.Second)
@@ -88,7 +87,7 @@ func (h *healthChecker) loop() {
 	}
 }
 
-func (h *healthChecker) probeAll() {
+func (h *HealthChecker) probeAll() {
 	for _, transport := range h.members {
 		go h.probe(transport)
 	}
@@ -97,7 +96,7 @@ func (h *healthChecker) probeAll() {
 // probe sends a lightweight NS query for "." to the given transport and
 // records the RTT. NXDOMAIN / SERVFAIL still gives a valid RTT measurement;
 // only network-level errors are counted as failures.
-func (h *healthChecker) probe(transport adapter.DNSTransport) {
+func (h *HealthChecker) probe(transport adapter.DNSTransport) {
 	msg := &mDNS.Msg{
 		MsgHdr: mDNS.MsgHdr{
 			RecursionDesired: true,

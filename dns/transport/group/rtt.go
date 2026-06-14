@@ -12,9 +12,9 @@ const (
 	// Alpha for EWMA with defaultSampleSize: 2/(10+1) ≈ 0.18
 )
 
-// rttEstimator tracks exponentially-weighted moving-average RTT for each
-// member transport tag. It is safe for concurrent use.
-type rttEstimator struct {
+// defaultRTTEstimator implements RTTEstimator and tracks exponentially-weighted moving-average RTT.
+// It is safe for concurrent use.
+type defaultRTTEstimator struct {
 	mu         sync.RWMutex
 	entries    map[string]*rttEntry
 	sampleSize int
@@ -30,20 +30,18 @@ type rttEntry struct {
 	lastQueryTime time.Time // wall time of last recorded sample or failure
 }
 
-func newRTTEstimator(sampleSize int) *rttEstimator {
+func newRTTEstimator(sampleSize int) RTTEstimator {
 	if sampleSize <= 0 {
 		sampleSize = defaultSampleSize
 	}
-	return &rttEstimator{
+	return &defaultRTTEstimator{
 		entries:    make(map[string]*rttEntry),
 		sampleSize: sampleSize,
 		alpha:      2.0 / float64(sampleSize+1),
 	}
 }
 
-// Record updates the EWMA RTT for the given transport tag after a successful
-// exchange. rtt is the total round-trip duration observed by the caller.
-func (e *rttEstimator) Record(tag string, rtt time.Duration) {
+func (e *defaultRTTEstimator) Record(tag string, rtt time.Duration) {
 	ms := float64(rtt.Milliseconds())
 	if ms < 0 {
 		ms = 0
@@ -53,7 +51,7 @@ func (e *rttEstimator) Record(tag string, rtt time.Duration) {
 	entry := e.getOrCreate(tag)
 	if entry.samples == 0 || entry.ewma == 0 {
 		entry.ewma = ms
-		entry.jitter = ms / 2.0 // Initialize jitter estimate
+		entry.jitter = 0 // No jitter estimate yet on first sample
 	} else {
 		diff := ms - entry.ewma
 		entry.jitter = e.alpha*math.Abs(diff) + (1-e.alpha)*entry.jitter
@@ -64,8 +62,7 @@ func (e *rttEstimator) Record(tag string, rtt time.Duration) {
 	entry.lastQueryTime = time.Now()
 }
 
-// RecordFailure increments the consecutive failure counter for the given tag.
-func (e *rttEstimator) RecordFailure(tag string) {
+func (e *defaultRTTEstimator) RecordFailure(tag string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	entry := e.getOrCreate(tag)
@@ -76,7 +73,7 @@ func (e *rttEstimator) RecordFailure(tag string) {
 
 // getOrCreate returns the entry for the given tag, creating it if needed.
 // Must be called with e.mu held.
-func (e *rttEstimator) getOrCreate(tag string) *rttEntry {
+func (e *defaultRTTEstimator) getOrCreate(tag string) *rttEntry {
 	entry, ok := e.entries[tag]
 	if !ok {
 		entry = &rttEntry{}
@@ -85,23 +82,20 @@ func (e *rttEstimator) getOrCreate(tag string) *rttEntry {
 	return entry
 }
 
-// Sorted returns a copy of tags sorted by ascending EWMA RTT.
-// Tags with consecutive failures are moved toward the end.
-// Tags with no samples yet are placed after measured tags but before failed ones.
-func (e *rttEstimator) Sorted(tags []string) []string {
+func (e *defaultRTTEstimator) Sorted(tags []string) []string {
 	e.mu.RLock()
-	// snapshot to avoid holding lock during sort
 	type snapshot struct {
-		tag      string
-		score    float64
-		failures int
+		tag       string
+		score     float64
+		failures  int
 		hasSample bool
 	}
 	snaps := make([]snapshot, len(tags))
 	for i, tag := range tags {
 		entry, ok := e.entries[tag]
 		if !ok {
-			snaps[i] = snapshot{tag: tag, score: math.MaxFloat64, hasSample: false}
+			// Unseen server: score = 0 so it sorts first (explore phase).
+			snaps[i] = snapshot{tag: tag, score: 0, hasSample: false}
 		} else {
 			snaps[i] = snapshot{
 				tag:       tag,
@@ -135,24 +129,33 @@ func (e *rttEstimator) Sorted(tags []string) []string {
 	return sorted
 }
 
-// Snapshot returns the current rttEntry for a tag (nil if unseen).
-func (e *rttEstimator) Snapshot(tag string) *rttEntry {
+func (e *defaultRTTEstimator) Snapshot(tag string) *RTTSnapshot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if entry, ok := e.entries[tag]; ok {
-		cp := *entry
-		return &cp
+		return &RTTSnapshot{
+			EWMA:          entry.ewma,
+			Jitter:        entry.jitter,
+			Failures:      entry.failures,
+			TotalFailures: entry.totalFailures,
+			LastQueryTime: entry.lastQueryTime,
+		}
 	}
 	return nil
 }
 
-// AllSnapshots returns a map of tag → copy of rttEntry for all known tags.
-func (e *rttEstimator) AllSnapshots() map[string]rttEntry {
+func (e *defaultRTTEstimator) AllSnapshots() map[string]RTTSnapshot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	out := make(map[string]rttEntry, len(e.entries))
+	out := make(map[string]RTTSnapshot, len(e.entries))
 	for tag, entry := range e.entries {
-		out[tag] = *entry
+		out[tag] = RTTSnapshot{
+			EWMA:          entry.ewma,
+			Jitter:        entry.jitter,
+			Failures:      entry.failures,
+			TotalFailures: entry.totalFailures,
+			LastQueryTime: entry.lastQueryTime,
+		}
 	}
 	return out
 }

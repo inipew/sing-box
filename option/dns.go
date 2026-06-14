@@ -278,7 +278,7 @@ type GroupDNSServerOptions struct {
 	Detour string `json:"detour,omitempty"`
 
 	// Strategy controls which server(s) are selected for each query.
-	// Values: "first", "random", "round_robin", "p2", "ph", "p<N>", "wp2" (default).
+	// Values: "first", "random", "round_robin", "weighted", "epsilon_greedy", "wp2" (default).
 	Strategy string `json:"strategy,omitempty"`
 
 	// Mode controls how queries are dispatched to selected servers.
@@ -289,8 +289,11 @@ type GroupDNSServerOptions struct {
 	// Default: 300ms (happy-eyeballs style).
 	FallbackDelay badoption.Duration `json:"fallback_delay,omitempty"`
 
-	// MaxRetries is the maximum number of servers to try in "sequential" mode
-	// before returning an error. 0 means try all servers.
+	// MaxRetries is the maximum number of servers to try or race across all modes.
+	// In "sequential", it's the maximum number of servers to try.
+	// In "concurrent", it's the maximum number of servers to race simultaneously.
+	// In "fallback", it's the maximum number of servers to try (1 primary + fallbacks).
+	// 0 means try all servers.
 	MaxRetries int `json:"max_retries,omitempty"`
 
 	// HealthCheck configures active latency probing.

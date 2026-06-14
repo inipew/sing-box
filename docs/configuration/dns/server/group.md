@@ -71,9 +71,8 @@ The load-balancing strategy used to select servers for each query.
 | `first` | Always selects the single lowest-RTT server. |
 | `random` | Selects one server uniformly at random, ignoring RTT. |
 | `round_robin` | Cycles through all servers in order. |
-| `p2` | Picks one server at random from the top 2 sorted by EWMA RTT. |
-| `ph` | Picks one server at random from the top half sorted by EWMA RTT. |
-| `p<N>` | Picks one server at random from the top `N` sorted by EWMA RTT (e.g. `p3`). |
+| `weighted` | Server selection probability is inversely proportional to its EWMA RTT. Faster servers receive proportionally more traffic. |
+| `epsilon_greedy` | Explores randomly 10% of the time, and exploits the fastest server 90% of the time. |
 
 #### mode
 
@@ -93,7 +92,11 @@ Default: `300ms`.
 
 #### max_retries
 
-The maximum number of servers to try in `sequential` mode before returning an error. 
+The maximum number of servers to try or race across all modes.
+- In `sequential`, it's the maximum number of servers to try sequentially.
+- In `concurrent`, it's the maximum number of servers to race simultaneously.
+- In `fallback`, it's the maximum number of servers to try (1 primary + remaining as fallbacks).
+
 `0` means it will try all available servers.
 
 #### health_check

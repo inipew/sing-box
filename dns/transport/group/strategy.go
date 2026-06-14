@@ -3,25 +3,9 @@ package group
 import (
 	"fmt"
 	"math/rand/v2"
-	"strconv"
 	"strings"
 	"sync/atomic"
 )
-
-// strategySelector picks an ordered candidate list from the full server pool
-// for each query. The first element is the strategy's primary choice; the
-// remaining elements are the fallback order for sequential/fallback modes.
-// concurrent mode races all returned elements simultaneously.
-type strategySelector interface {
-	// Select returns a fully-ordered slice of transport tags.
-	// The first element is the strategy's preferred primary.
-	// Remaining elements follow in a sensible fallback order.
-	// The returned slice always contains every tag exactly once.
-	Select(tags []string, rtt *rttEstimator) []string
-
-	// Name returns the human-readable strategy name.
-	Name() string
-}
 
 // appendRemaining appends all elements of full that are not already in result.
 func appendRemaining(result []string, full []string) []string {
@@ -47,7 +31,7 @@ type strategyWP2 struct{}
 
 func (s strategyWP2) Name() string { return "wp2" }
 
-func (s strategyWP2) Select(tags []string, rtt *rttEstimator) []string {
+func (s strategyWP2) Select(tags []string, rtt RTTEstimator) []string {
 	if len(tags) == 0 {
 		return nil
 	}
@@ -79,7 +63,7 @@ type strategyFirst struct{}
 
 func (s strategyFirst) Name() string { return "first" }
 
-func (s strategyFirst) Select(tags []string, rtt *rttEstimator) []string {
+func (s strategyFirst) Select(tags []string, rtt RTTEstimator) []string {
 	if len(tags) == 0 {
 		return nil
 	}
@@ -92,14 +76,17 @@ type strategyRandom struct{}
 
 func (s strategyRandom) Name() string { return "random" }
 
-func (s strategyRandom) Select(tags []string, rtt *rttEstimator) []string {
+func (s strategyRandom) Select(tags []string, rtt RTTEstimator) []string {
 	if len(tags) == 0 {
 		return nil
 	}
 	idx := rand.IntN(len(tags))
-	result := make([]string, 0, len(tags))
+	sorted := rtt.Sorted(tags)
+	result := make([]string, 0, len(sorted))
 	result = append(result, tags[idx])
-	return appendRemaining(result, tags)
+	// Remaining servers follow in RTT-sorted order so sequential dispatcher
+	// always falls back to the fastest available server.
+	return appendRemaining(result, sorted)
 }
 
 // strategyRoundRobin cycles through all servers as primary; remaining servers
@@ -110,50 +97,124 @@ type strategyRoundRobin struct {
 
 func (s *strategyRoundRobin) Name() string { return "round_robin" }
 
-func (s *strategyRoundRobin) Select(tags []string, rtt *rttEstimator) []string {
+func (s *strategyRoundRobin) Select(tags []string, rtt RTTEstimator) []string {
 	if len(tags) == 0 {
 		return nil
 	}
-	idx := int(s.counter.Add(1)-1) % len(tags)
-	result := make([]string, 0, len(tags))
+	// Use uint64 modulo before converting to int to prevent negative-index
+	// panic on counter overflow (uint64 wraps → int64(-1) → -1 % n = -1).
+	idx := int(s.counter.Add(1) % uint64(len(tags)))
+	sorted := rtt.Sorted(tags)
+	result := make([]string, 0, len(sorted))
 	result = append(result, tags[idx])
-	return appendRemaining(result, tags)
+	// Remaining servers follow in RTT-sorted order.
+	return appendRemaining(result, sorted)
 }
 
-// strategyPN picks a random primary from the top-N servers by EWMA RTT.
-// Remaining servers follow in RTT-sorted order.
-// n==0 means "top-half" (ph mode).
-type strategyPN struct {
-	n    int // 0 means "half"
-	name string
+// strategyWeighted picks a primary server with probability inversely proportional to its EWMA RTT.
+type strategyWeighted struct{}
+
+func (s strategyWeighted) Name() string { return "weighted" }
+
+func (s strategyWeighted) Select(tags []string, rtt RTTEstimator) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+	if len(tags) == 1 {
+		return []string{tags[0]}
+	}
+
+	snapshots := rtt.AllSnapshots()
+	weights := make([]float64, len(tags))
+	totalWeight := 0.0
+
+	for i, tag := range tags {
+		snap, ok := snapshots[tag]
+		var w float64
+		if !ok || snap.EWMA <= 0 {
+			// Unseen server: give it a generous initial weight (equiv. 10ms).
+			// It will be explored by epsilon_greedy or naturally through fallback.
+			w = 1.0 / 10.0
+		} else {
+			// Score = EWMA + 2*Jitter (same formula as Sorted).
+			score := snap.EWMA + (2.0 * snap.Jitter)
+			if score < 1.0 {
+				score = 1.0
+			}
+			w = 1.0 / score
+
+			// Penalize servers with consecutive failures: divide weight by 10 per failure,
+			// capped at 3 failures so the server still occasionally gets a probe.
+			if snap.Failures > 0 {
+				penalty := snap.Failures
+				if penalty > 3 {
+					penalty = 3
+				}
+				w /= float64(penalty) * 10.0
+			}
+		}
+
+		weights[i] = w
+		totalWeight += w
+	}
+
+	r := rand.Float64() * totalWeight
+	sorted := rtt.Sorted(tags)
+	var primary string
+	sum := 0.0
+	for i, w := range weights {
+		sum += w
+		if r <= sum {
+			primary = tags[i]
+			break
+		}
+	}
+	// Floating-point accumulation may not reach totalWeight exactly.
+	// Fall back to the last element in sorted order (best available fallback).
+	if primary == "" {
+		primary = sorted[len(sorted)-1]
+	}
+
+	result := make([]string, 0, len(sorted))
+	result = append(result, primary)
+	return appendRemaining(result, sorted)
 }
 
-func (s *strategyPN) Name() string { return s.name }
+// strategyEpsilonGreedy picks the absolute best server most of the time (1 - epsilon),
+// but occasionally picks a completely random server (epsilon) to explore.
+type strategyEpsilonGreedy struct {
+	epsilon float64
+}
 
-func (s *strategyPN) Select(tags []string, rtt *rttEstimator) []string {
+func (s strategyEpsilonGreedy) Name() string { return "epsilon_greedy" }
+
+func (s strategyEpsilonGreedy) Select(tags []string, rtt RTTEstimator) []string {
 	if len(tags) == 0 {
 		return nil
 	}
 	sorted := rtt.Sorted(tags)
-	n := s.n
-	if n <= 0 {
-		// ph: top-half (rounded up)
-		n = (len(sorted) + 1) / 2
+	if len(tags) == 1 {
+		return sorted
 	}
-	if n > len(sorted) {
-		n = len(sorted)
+
+	var primary string
+	if rand.Float64() < s.epsilon {
+		// Explore
+		idx := rand.IntN(len(tags))
+		primary = tags[idx]
+	} else {
+		// Exploit
+		primary = sorted[0]
 	}
-	// Pick one random server from the top-N as primary.
-	idx := rand.IntN(n)
+
 	result := make([]string, 0, len(sorted))
-	result = append(result, sorted[idx])
+	result = append(result, primary)
 	return appendRemaining(result, sorted)
 }
 
-// newStrategy parses a strategy name and returns the corresponding selector.
-// Supported values: "wp2" (default), "first", "random", "round_robin",
-// "p2", "ph", "p<N>" (e.g. "p3").
-func newStrategy(name string) (strategySelector, error) {
+// NewStrategy parses a strategy name and returns the corresponding selector.
+// Supported values: "wp2" (default), "first", "random", "round_robin", "weighted", "epsilon_greedy".
+func NewStrategy(name string) (Strategy, error) {
 	if name == "" {
 		name = "wp2"
 	}
@@ -166,18 +227,11 @@ func newStrategy(name string) (strategySelector, error) {
 		return strategyRandom{}, nil
 	case "round_robin", "rr":
 		return &strategyRoundRobin{}, nil
-	case "ph":
-		return &strategyPN{n: 0, name: "ph"}, nil
-	case "p2":
-		return &strategyPN{n: 2, name: "p2"}, nil
+	case "weighted":
+		return strategyWeighted{}, nil
+	case "epsilon_greedy":
+		return strategyEpsilonGreedy{epsilon: 0.1}, nil
 	default:
-		// Generic p<N> form
-		if strings.HasPrefix(name, "p") {
-			n, err := strconv.Atoi(name[1:])
-			if err == nil && n >= 1 {
-				return &strategyPN{n: n, name: name}, nil
-			}
-		}
-		return nil, fmt.Errorf("unknown dns group strategy: %q (valid: wp2, first, random, round_robin, p2, ph, p<N>)", name)
+		return nil, fmt.Errorf("unknown dns group strategy: %q (valid: wp2, first, random, round_robin, weighted, epsilon_greedy)", name)
 	}
 }

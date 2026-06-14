@@ -71,9 +71,8 @@ icon: material/server-network
 | `first` | 始终选择 EWMA RTT 最低的一台服务器。 |
 | `random` | 忽略 RTT，均匀随机地选择一台服务器。 |
 | `round_robin` | 轮询，按顺序循环使用所有服务器。 |
-| `p2` | 从 EWMA RTT 排序的前 2 名中随机选择一台服务器。 |
-| `ph` | 从 EWMA RTT 排序的前一半中随机选择一台服务器。 |
-| `p<N>` | 从 EWMA RTT 排序的前 `N` 名中随机选择一台服务器 (例如 `p3`)。 |
+| `weighted` | 根据 EWMA RTT 成反比分配概率。更快的服务器会按比例接收更多流量。 |
+| `epsilon_greedy` | 10% 的概率随机探索服务器，90% 的概率使用当前最快的服务器。 |
 
 #### mode
 
@@ -93,7 +92,11 @@ icon: material/server-network
 
 #### max_retries
 
-在 `sequential` 模式下返回错误之前尝试的最大服务器数量。
+在所有模式下尝试或竞争的最大服务器数量。
+- 在 `sequential`（顺序）模式下，它是按顺序尝试的最大服务器数。
+- 在 `concurrent`（并发）模式下，它是同时竞争的最大服务器数。
+- 在 `fallback`（回退）模式下，它是尝试的最大服务器数（1 个主服务器 + 剩余的作为回退）。
+
 `0` 表示将尝试所有可用的服务器。
 
 #### health_check

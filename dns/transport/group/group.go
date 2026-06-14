@@ -2,7 +2,6 @@ package group
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -19,19 +18,6 @@ import (
 	"github.com/sagernet/sing/service"
 
 	mDNS "github.com/miekg/dns"
-)
-
-// dispatchMode controls how queries are sent to selected member servers.
-type dispatchMode uint8
-
-const (
-	// dispatchSequential tries servers one by one until one succeeds.
-	dispatchSequential dispatchMode = iota
-	// dispatchConcurrent races all selected servers; first success wins.
-	dispatchConcurrent
-	// dispatchFallback sends to the primary first; after fallbackDelay it
-	// concurrently promotes remaining servers (happy-eyeballs style).
-	dispatchFallback
 )
 
 const (
@@ -52,18 +38,20 @@ type GroupTransport struct {
 	logger        log.ContextLogger
 	memberTags    []string
 	strategyName  string
-	mode          dispatchMode
+	modeStr       string
 	fallbackDelay time.Duration
 	maxRetries    int
 	detour        string // optional: outbound tag to force for all member transports
+	customDialer  N.Dialer
 	hcOptions     *option.DNSGroupHealthCheckOptions
 
 	access        sync.RWMutex
 	members       []adapter.DNSTransport // resolved at Start
 	clonedMembers []adapter.DNSTransport // clones created by detour override, must be closed by group
-	strategy      strategySelector
-	rtt           *rttEstimator
-	hc            *healthChecker
+	strategy      Strategy
+	dispatcher    Dispatcher
+	rtt           RTTEstimator
+	hc            *HealthChecker
 	started       bool
 }
 
@@ -78,15 +66,12 @@ func NewGroupTransport(ctx context.Context, logger log.ContextLogger, tag string
 		return nil, E.New("dns group[", tag, "]: no member servers specified")
 	}
 
-	// Parse and validate mode.
-	var mode dispatchMode
-	switch strings.ToLower(options.Mode) {
+	modeStr := strings.ToLower(options.Mode)
+	switch modeStr {
 	case "", "sequential":
-		mode = dispatchSequential
+		modeStr = "sequential"
 	case "concurrent":
-		mode = dispatchConcurrent
 	case "fallback":
-		mode = dispatchFallback
 	default:
 		return nil, fmt.Errorf("dns group[%s]: unknown mode %q (valid: sequential, concurrent, fallback)", tag, options.Mode)
 	}
@@ -96,7 +81,7 @@ func NewGroupTransport(ctx context.Context, logger log.ContextLogger, tag string
 	if strategyName == "" {
 		strategyName = "wp2"
 	}
-	if _, err := newStrategy(strategyName); err != nil {
+	if _, err := NewStrategy(strategyName); err != nil {
 		return nil, E.Cause(err, "dns group[", tag, "]")
 	}
 
@@ -118,7 +103,7 @@ func NewGroupTransport(ctx context.Context, logger log.ContextLogger, tag string
 		logger:        logger,
 		memberTags:    options.Servers,
 		strategyName:  strategyName,
-		mode:          mode,
+		modeStr:       modeStr,
 		fallbackDelay: fd,
 		maxRetries:    options.MaxRetries,
 		detour:        options.Detour,
@@ -127,17 +112,13 @@ func NewGroupTransport(ctx context.Context, logger log.ContextLogger, tag string
 	}, nil
 }
 
-// ---- adapter.DNSTransport interface ----
-
 func (t *GroupTransport) Type() string { return C.DNSTypeGroup }
 func (t *GroupTransport) Tag() string  { return t.tag }
 
-// Dependencies returns member tags so the transport manager starts them first.
 func (t *GroupTransport) Dependencies() []string {
 	return t.memberTags
 }
 
-// Reset resets the underlying connections of all member transports.
 func (t *GroupTransport) Reset() {
 	t.access.RLock()
 	members := t.members
@@ -147,14 +128,11 @@ func (t *GroupTransport) Reset() {
 	}
 }
 
-// Start resolves member transport references and launches the health checker.
-// It is called by the transport manager after all dependencies are started.
 func (t *GroupTransport) Start(stage adapter.StartStage) error {
 	if stage != adapter.StartStateStart {
 		return nil
 	}
 
-	// Resolve member transport references from the transport manager in context.
 	tm := service.FromContext[adapter.DNSTransportManager](t.ctx)
 	if tm == nil {
 		return E.New("dns group[", t.tag, "]: DNSTransportManager not found in context")
@@ -169,17 +147,41 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 		members = append(members, transport)
 	}
 
-	strategy, err := newStrategy(t.strategyName)
+	strategy, err := NewStrategy(t.strategyName)
 	if err != nil {
 		return E.Cause(err, "dns group[", t.tag, "]")
 	}
 
-	// Apply group-level detour override if configured.
+	var dispatcher Dispatcher
+	switch t.modeStr {
+	case "concurrent":
+		dispatcher = &ConcurrentDispatcher{Tag: t.tag, Logger: t.logger, MaxRetries: t.maxRetries}
+	case "fallback":
+		dispatcher = &FallbackDispatcher{Tag: t.tag, Logger: t.logger, FallbackDelay: t.fallbackDelay, MaxRetries: t.maxRetries}
+	default:
+		dispatcher = &SequentialDispatcher{Tag: t.tag, Logger: t.logger, MaxRetries: t.maxRetries}
+	}
+
+	var overrideDialer N.Dialer
+	if t.customDialer != nil {
+		overrideDialer = t.customDialer
+	} else if t.detour != "" {
+		outboundManager := service.FromContext[adapter.OutboundManager](t.ctx)
+		if outboundManager == nil {
+			return E.New("OutboundManager not found in context; cannot apply detour")
+		}
+		detourDialer := dialer.NewDetour(outboundManager, t.detour, false)
+		if err := dialer.InitializeDetour(detourDialer); err != nil {
+			return E.Cause(err, "initialize detour ", t.detour)
+		}
+		overrideDialer = detourDialer
+	}
+
 	var clonedMembers []adapter.DNSTransport
-	if t.detour != "" {
-		effective, cloned, err := t.wrapMembersWithDetour(members)
+	if overrideDialer != nil {
+		effective, cloned, err := t.wrapMembersWithDialer(members, overrideDialer)
 		if err != nil {
-			return E.Cause(err, "dns group[", t.tag, "] detour override")
+			return E.Cause(err, "dns group[", t.tag, "] override dialer")
 		}
 		members = effective
 		clonedMembers = cloned
@@ -189,64 +191,61 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 	t.members = members
 	t.clonedMembers = clonedMembers
 	t.strategy = strategy
+	t.dispatcher = dispatcher
 	t.started = true
 	t.access.Unlock()
 
-	// Start health checker if configured.
 	if t.hcOptions != nil {
-		hc := newHealthChecker(t.ctx, members, t.hcOptions, t.rtt, t.logger)
+		hc := NewHealthChecker(t.ctx, members, t.hcOptions, t.rtt, t.logger)
 		t.hc = hc
 		hc.Start()
 	}
 
-	modeStr := [...]string{"sequential", "concurrent", "fallback"}[t.mode]
 	detourInfo := ""
 	if t.detour != "" {
 		detourInfo = ", detour=" + t.detour
 	}
 	t.logger.Info("dns group [", t.tag, "] started with ", len(members),
-		" members, strategy=", t.strategyName, ", mode=", modeStr, detourInfo)
+		" members, strategy=", t.strategyName, ", mode=", t.modeStr, detourInfo)
 	return nil
 }
 
-// wrapMembersWithDetour returns clones of member transports with the group's
-// detour applied, and the list of these clones so they can be closed later.
-func (t *GroupTransport) wrapMembersWithDetour(members []adapter.DNSTransport) (effective []adapter.DNSTransport, clonedMembers []adapter.DNSTransport, err error) {
-	outboundManager := service.FromContext[adapter.OutboundManager](t.ctx)
-	if outboundManager == nil {
-		return nil, nil, E.New("OutboundManager not found in context; cannot apply detour")
-	}
-	detourDialer := dialer.NewDetour(outboundManager, t.detour, false)
-	if err := dialer.InitializeDetour(detourDialer); err != nil {
-		return nil, nil, E.Cause(err, "initialize detour ", t.detour)
-	}
-
+func (t *GroupTransport) wrapMembersWithDialer(members []adapter.DNSTransport, overrideDialer N.Dialer) (effective []adapter.DNSTransport, clonedMembers []adapter.DNSTransport, err error) {
 	effective = make([]adapter.DNSTransport, len(members))
 	for i, m := range members {
 		if overridable, ok := m.(adapter.DNSTransportWithDialerOverride); ok {
 			existingDetour := dialer.DetourTag(overridable.RawDialer())
-			if existingDetour != "" && existingDetour != t.detour {
-				t.logger.Warn("dns group[", t.tag, "] overrides detour ", existingDetour, " to ", t.detour, " for member ", m.Tag())
+			newDetour := dialer.DetourTag(overrideDialer)
+			// Warn only if both sides are named detours that differ.
+			// If newDetour is empty the overrideDialer is a custom (non-detour) dialer;
+			// in that case we still override silently (desired behaviour).
+			if existingDetour != "" && newDetour != "" && existingDetour != newDetour {
+				t.logger.Warn("dns group[", t.tag, "] overrides detour '", existingDetour,
+					"' with '", newDetour, "' for member ", m.Tag())
+			} else if existingDetour != "" && newDetour == "" {
+				t.logger.Debug("dns group[", t.tag, "] applying custom dialer to member ", m.Tag(),
+					" (replaces detour '", existingDetour, "')")
 			}
 
-			cloned := overridable.WithDialer(detourDialer)
-			// Initialize the cloned transport (calls dialer.InitializeDetour internally).
+			cloned := overridable.WithDialer(overrideDialer)
 			if err := cloned.Start(adapter.StartStateStart); err != nil {
+				// Prevent leak: close previously started clones
+				for _, c := range clonedMembers {
+					c.Close()
+				}
 				return nil, nil, E.Cause(err, "start cloned transport ", m.Tag())
 			}
 			effective[i] = cloned
 			clonedMembers = append(clonedMembers, cloned)
-			t.logger.Debug("dns group[", t.tag, "] detour override applied to member: ", m.Tag())
+			t.logger.Debug("dns group[", t.tag, "] dialer override applied to member: ", m.Tag())
 		} else {
-			// Non-network transports (local, hosts, fakeip) are used as-is.
 			effective[i] = m
-			t.logger.Debug("dns group[", t.tag, "] member ", m.Tag(), " does not support detour override, using as-is")
+			t.logger.Debug("dns group[", t.tag, "] member ", m.Tag(), " does not support dialer override, using as-is")
 		}
 	}
 	return effective, clonedMembers, nil
 }
 
-// Close stops the health checker and closes any cloned members.
 func (t *GroupTransport) Close() error {
 	t.access.Lock()
 	t.started = false
@@ -265,21 +264,20 @@ func (t *GroupTransport) Close() error {
 	return nil
 }
 
-// RawDialer returns a dummy dialer containing the group's detour tag, if any.
-// This allows parent groups to detect our detour override.
 func (t *GroupTransport) RawDialer() N.Dialer {
+	if t.customDialer != nil {
+		return t.customDialer
+	}
 	if t.detour == "" {
 		return nil
 	}
 	return dialer.NewDetour(nil, t.detour, false)
 }
 
-// WithDialer returns a clone of this group transport that will propagate
-// the new detour override to all its members when started.
 func (t *GroupTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
 	clone := *t
-	clone.detour = dialer.DetourTag(d)
-	// Reset runtime state so it can be safely Started again
+	clone.customDialer = d
+	clone.detour = "" // overriding the string detour
 	clone.access = sync.RWMutex{}
 	clone.members = nil
 	clone.clonedMembers = nil
@@ -293,15 +291,13 @@ func (t *GroupTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
 	return &clone
 }
 
-// ---- Core dispatch ----
-
-// Exchange dispatches the DNS message according to the configured mode,
-// recording per-server RTT for future strategy decisions.
 func (t *GroupTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
 	t.access.RLock()
 	members := t.members
 	strategy := t.strategy
+	dispatcher := t.dispatcher
 	started := t.started
+	rtt := t.rtt
 	t.access.RUnlock()
 
 	if !started {
@@ -311,7 +307,6 @@ func (t *GroupTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS
 		return nil, E.New("dns group[", t.tag, "]: no member transports")
 	}
 
-	// Build tag→transport index and ordered tag list for the strategy.
 	tags := make([]string, len(members))
 	tagToTransport := make(map[string]adapter.DNSTransport, len(members))
 	for i, m := range members {
@@ -319,237 +314,37 @@ func (t *GroupTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS
 		tagToTransport[m.Tag()] = m
 	}
 
-	selected := strategy.Select(tags, t.rtt)
+	selected := strategy.Select(tags, rtt)
 	if len(selected) == 0 {
 		return nil, E.New("dns group[", t.tag, "]: strategy returned no servers")
 	}
 
-	switch t.mode {
-	case dispatchConcurrent:
-		return t.exchangeConcurrent(ctx, message, selected, tagToTransport)
-	case dispatchFallback:
-		return t.exchangeFallback(ctx, message, selected, tagToTransport)
-	default:
-		return t.exchangeSequential(ctx, message, selected, tagToTransport)
-	}
+	return dispatcher.Dispatch(ctx, message, selected, tagToTransport, rtt)
 }
 
-// ExchangeAsync executes the query asynchronously and calls the callback when done.
 func (t *GroupTransport) ExchangeAsync(ctx context.Context, message *mDNS.Msg, callback func(response *mDNS.Msg, err error)) {
 	go func() {
 		callback(t.Exchange(ctx, message))
 	}()
 }
 
-// exchangeSequential tries each selected server in order until one succeeds.
-func (t *GroupTransport) exchangeSequential(
-	ctx context.Context,
-	message *mDNS.Msg,
-	selected []string,
-	byTag map[string]adapter.DNSTransport,
-) (*mDNS.Msg, error) {
-	limit := len(selected)
-	if t.maxRetries > 0 && t.maxRetries < limit {
-		limit = t.maxRetries
-	}
-	var lastErr error
-	for i := 0; i < limit; i++ {
-		tag := selected[i]
-		transport, ok := byTag[tag]
-		if !ok {
-			continue
-		}
-		start := time.Now()
-		resp, err := transport.Exchange(ctx, message)
-		if err == nil {
-			t.rtt.Record(tag, time.Since(start))
-			return resp, nil
-		}
-		if !errors.Is(err, context.Canceled) {
-			t.rtt.RecordFailure(tag)
-		}
-		t.logger.DebugContext(ctx, "dns group[", t.tag, "] sequential: server ", tag, " failed: ", err)
-		lastErr = err
-	}
-	return nil, E.Cause(lastErr, "dns group[", t.tag, "]: all servers failed")
-}
-
-// exchangeConcurrent races all selected servers and returns the first
-// successful response, cancelling the remaining goroutines.
-func (t *GroupTransport) exchangeConcurrent(
-	ctx context.Context,
-	message *mDNS.Msg,
-	selected []string,
-	byTag map[string]adapter.DNSTransport,
-) (*mDNS.Msg, error) {
-	type result struct {
-		tag  string
-		resp *mDNS.Msg
-		rtt  time.Duration
-		err  error
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	launched := 0
-	ch := make(chan result, len(selected))
-	for _, tag := range selected {
-		transport, ok := byTag[tag]
-		if !ok {
-			continue
-		}
-		launched++
-		go func(tag string, transport adapter.DNSTransport) {
-			start := time.Now()
-			resp, err := transport.Exchange(ctx, message)
-			ch <- result{tag: tag, resp: resp, rtt: time.Since(start), err: err}
-		}(tag, transport)
-	}
-
-	if launched == 0 {
-		return nil, E.New("dns group[", t.tag, "]: no valid transports to race")
-	}
-
-	received := 0
-	var lastErr error
-	for received < launched {
-		select {
-		case r := <-ch:
-			received++
-			if r.err == nil {
-				t.rtt.Record(r.tag, r.rtt)
-				cancel() // signal remaining goroutines to stop
-				return r.resp, nil
-			}
-			if !errors.Is(r.err, context.Canceled) {
-				t.rtt.RecordFailure(r.tag)
-			}
-			lastErr = r.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	return nil, E.Cause(lastErr, "dns group[", t.tag, "]: all concurrent servers failed")
-}
-
-// exchangeFallback sends to the primary server first; if it does not respond
-// within fallbackDelay, it concurrently promotes the remaining servers
-// (happy-eyeballs style) and returns the first success.
-func (t *GroupTransport) exchangeFallback(
-	ctx context.Context,
-	message *mDNS.Msg,
-	selected []string,
-	byTag map[string]adapter.DNSTransport,
-) (*mDNS.Msg, error) {
-	if len(selected) == 1 {
-		return t.exchangeSequential(ctx, message, selected, byTag)
-	}
-
-	type result struct {
-		tag  string
-		resp *mDNS.Msg
-		rtt  time.Duration
-		err  error
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// Channel sized for all servers.
-	ch := make(chan result, len(selected))
-
-	launch := func(tag string) bool {
-		transport, ok := byTag[tag]
-		if !ok {
-			return false
-		}
-		go func(tag string, tr adapter.DNSTransport) {
-			start := time.Now()
-			resp, err := tr.Exchange(ctx, message)
-			ch <- result{tag: tag, resp: resp, rtt: time.Since(start), err: err}
-		}(tag, transport)
-		return true
-	}
-
-	// Launch primary immediately.
-	primary := selected[0]
-	launched := 0
-	if launch(primary) {
-		launched = 1
-	}
-
-	fallbackTimer := time.NewTimer(t.fallbackDelay)
-	defer fallbackTimer.Stop()
-	fallbackLaunched := false
-
-	launchFallbacks := func() {
-		if fallbackLaunched {
-			return
-		}
-		fallbackLaunched = true
-		for _, tag := range selected[1:] {
-			if launch(tag) {
-				t.logger.DebugContext(ctx, "dns group[", t.tag, "] fallback: promoting server ", tag)
-				launched++
-			}
-		}
-	}
-
-	received := 0
-	var lastErr error
-
-	for {
-		// Only exit when all launched goroutines have reported.
-		if received >= launched && launched > 0 {
-			break
-		}
-		select {
-		case <-fallbackTimer.C:
-			launchFallbacks()
-		case r := <-ch:
-			received++
-			if r.err == nil {
-				t.rtt.Record(r.tag, r.rtt)
-				cancel()
-				return r.resp, nil
-			}
-			if !errors.Is(r.err, context.Canceled) {
-				t.rtt.RecordFailure(r.tag)
-			}
-			t.logger.DebugContext(ctx, "dns group[", t.tag, "] fallback: server ", r.tag, " failed: ", r.err)
-			lastErr = r.err
-			// If primary failed immediately, promote fallbacks right away.
-			if r.tag == primary && !fallbackLaunched {
-				launchFallbacks()
-			}
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-
-	return nil, E.Cause(lastErr, "dns group[", t.tag, "]: all fallback servers failed")
-}
-
-// ---- adapter.DNSTransportWithStats interface ----
-
-// Stats returns a snapshot of RTT and health metrics for each member transport.
 func (t *GroupTransport) Stats() []adapter.DNSTransportMemberStats {
 	t.access.RLock()
 	members := t.members
+	rtt := t.rtt
 	t.access.RUnlock()
 
-	snapshots := t.rtt.AllSnapshots()
+	snapshots := rtt.AllSnapshots()
 	stats := make([]adapter.DNSTransportMemberStats, len(members))
 	for i, m := range members {
 		entry, ok := snapshots[m.Tag()]
 		if ok {
 			stats[i] = adapter.DNSTransportMemberStats{
 				Tag:           m.Tag(),
-				AverageRTTMs:  entry.ewma,
-				JitterMs:      entry.jitter,
-				Failures:      entry.totalFailures,
-				LastQueryTime: entry.lastQueryTime,
+				AverageRTTMs:  entry.EWMA,
+				JitterMs:      entry.Jitter,
+				Failures:      entry.TotalFailures,
+				LastQueryTime: entry.LastQueryTime,
 			}
 		} else {
 			stats[i] = adapter.DNSTransportMemberStats{Tag: m.Tag()}
