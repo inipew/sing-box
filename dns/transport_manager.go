@@ -15,6 +15,7 @@ import (
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
+	"golang.org/x/sync/errgroup"
 )
 
 var _ adapter.DNSTransportManager = (*TransportManager)(nil)
@@ -88,60 +89,93 @@ func (m *TransportManager) Start(stage adapter.StartStage) error {
 	return nil
 }
 
+// startTransports starts all DNS transports respecting their declared
+// Dependencies. Transports within the same dependency wave are started
+// concurrently to minimise total startup latency.
 func (m *TransportManager) startTransports(transports []adapter.DNSTransport) error {
-	monitor := taskmonitor.New(m.logger, C.StartTimeout)
 	started := make(map[string]bool)
-	for {
-		canContinue := false
-	startOne:
-		for _, transportToStart := range transports {
-			transportTag := transportToStart.Tag()
-			if started[transportTag] {
+
+	for len(started) < len(transports) {
+		// Collect the next batch: all transports whose dependencies are
+		// already satisfied and that have not been started yet.
+		var wave []adapter.DNSTransport
+		for _, t := range transports {
+			if started[t.Tag()] {
 				continue
 			}
-			dependencies := transportToStart.Dependencies()
-			for _, dependency := range dependencies {
-				if !started[dependency] {
-					continue startOne
+			allReady := true
+			for _, dep := range t.Dependencies() {
+				if !started[dep] {
+					allReady = false
+					break
 				}
 			}
-			started[transportTag] = true
-			canContinue = true
-			if starter, isStarter := transportToStart.(adapter.Lifecycle); isStarter {
-				monitor.Start("start dns/", transportToStart.Type(), "[", transportTag, "]")
+			if allReady {
+				wave = append(wave, t)
+			}
+		}
+
+		// No progress possible → detect circular / missing dependencies.
+		if len(wave) == 0 {
+			currentTransport := common.Find(transports, func(it adapter.DNSTransport) bool {
+				return !started[it.Tag()]
+			})
+			var lintTransport func(oTree []string, oCurrent adapter.DNSTransport) error
+			lintTransport = func(oTree []string, oCurrent adapter.DNSTransport) error {
+				problemTransportTag := common.Find(oCurrent.Dependencies(), func(it string) bool {
+					return !started[it]
+				})
+				if common.Contains(oTree, problemTransportTag) {
+					return E.New("circular server dependency: ", strings.Join(oTree, " ->"), " ->", problemTransportTag)
+				}
+				m.access.Lock()
+				problemTransport := m.transportByTag[problemTransportTag]
+				m.access.Unlock()
+				if problemTransport == nil {
+					return E.New("dependency[", problemTransportTag, "] not found for server[", oCurrent.Tag(), "]")
+				}
+				return lintTransport(append(oTree, problemTransportTag), problemTransport)
+			}
+			return lintTransport([]string{currentTransport.Tag()}, currentTransport)
+		}
+
+		// startOne starts a single transport with its own taskmonitor.
+		startOne := func(t adapter.DNSTransport) error {
+			if starter, isStarter := t.(adapter.Lifecycle); isStarter {
+				transportTag := t.Tag()
+				// Each transport gets its own monitor so parallel goroutines
+				// do not race on a shared timer.
+				monitor := taskmonitor.New(m.logger, C.StartTimeout)
+				monitor.Start("start dns/", t.Type(), "[", transportTag, "]")
 				err := starter.Start(adapter.StartStateStart)
 				monitor.Finish()
 				if err != nil {
-					return E.Cause(err, "start dns/", transportToStart.Type(), "[", transportTag, "]")
+					return E.Cause(err, "start dns/", t.Type(), "[", transportTag, "]")
 				}
 			}
+			return nil
 		}
-		if len(started) == len(transports) {
-			break
-		}
-		if canContinue {
-			continue
-		}
-		currentTransport := common.Find(transports, func(it adapter.DNSTransport) bool {
-			return !started[it.Tag()]
-		})
-		var lintTransport func(oTree []string, oCurrent adapter.DNSTransport) error
-		lintTransport = func(oTree []string, oCurrent adapter.DNSTransport) error {
-			problemTransportTag := common.Find(oCurrent.Dependencies(), func(it string) bool {
-				return !started[it]
-			})
-			if common.Contains(oTree, problemTransportTag) {
-				return E.New("circular server dependency: ", strings.Join(oTree, " -> "), " -> ", problemTransportTag)
+
+		if len(wave) == 1 {
+			// Fast path: only one transport in the wave – no goroutine overhead.
+			if err := startOne(wave[0]); err != nil {
+				return err
 			}
-			m.access.Lock()
-			problemTransport := m.transportByTag[problemTransportTag]
-			m.access.Unlock()
-			if problemTransport == nil {
-				return E.New("dependency[", problemTransportTag, "] not found for server[", oCurrent.Tag(), "]")
+		} else {
+			// Parallel path: launch all wave members concurrently.
+			g, _ := errgroup.WithContext(context.Background())
+			for _, t := range wave {
+				t := t // capture loop var
+				g.Go(func() error { return startOne(t) })
 			}
-			return lintTransport(append(oTree, problemTransportTag), problemTransport)
+			if err := g.Wait(); err != nil {
+				return err
+			}
 		}
-		return lintTransport([]string{currentTransport.Tag()}, currentTransport)
+
+		for _, t := range wave {
+			started[t.Tag()] = true
+		}
 	}
 	return nil
 }
