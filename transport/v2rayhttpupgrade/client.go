@@ -7,12 +7,15 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/tls"
+	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
+	"github.com/sagernet/sing/common/bufio/deadline"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -77,6 +80,13 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	var deadlineConn net.Conn
+	if deadline.NeedAdditionalReadDeadline(conn) {
+		deadlineConn = deadline.NewConn(conn)
+	} else {
+		deadlineConn = conn
+	}
+	deadlineConn.SetDeadline(time.Now().Add(C.TCPTimeout))
 	request := &http.Request{
 		Method: http.MethodGet,
 		URL:    &c.requestURL,
@@ -86,13 +96,14 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 	request.Header.Set("Connection", "Upgrade")
 	request.Header.Set("Upgrade", "websocket")
 	request = request.WithContext(ctx)
-	err = request.Write(conn)
+	err = request.Write(deadlineConn)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
-	bufReader := std_bufio.NewReader(conn)
+	bufReader := std_bufio.NewReader(deadlineConn)
 	response, err := http.ReadResponse(bufReader, request)
+	deadlineConn.SetDeadline(time.Time{})
 	if err != nil {
 		conn.Close()
 		return nil, err

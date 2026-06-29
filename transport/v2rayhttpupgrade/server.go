@@ -14,6 +14,8 @@ import (
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/transport/v2rayhttp"
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/buf"
+	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -107,10 +109,20 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		s.invalidRequest(writer, request, http.StatusInternalServerError, E.New("invalid connection, maybe HTTP/2"))
 		return
 	}
-	conn, _, err := hijacker.Hijack()
+	conn, rw, err := hijacker.Hijack()
 	if err != nil {
 		s.invalidRequest(writer, request, http.StatusInternalServerError, E.Cause(err, "hijack failed"))
 		return
+	}
+	if rw.Reader.Buffered() > 0 {
+		buffer := buf.NewSize(rw.Reader.Buffered())
+		_, err = buffer.ReadFullFrom(rw.Reader, buffer.Len())
+		if err != nil {
+			s.invalidRequest(writer, request, http.StatusInternalServerError, E.Cause(err, "read early data"))
+			conn.Close()
+			return
+		}
+		conn = bufio.NewCachedConn(conn, buffer)
 	}
 	s.handler.NewConnectionEx(v2rayhttp.DupContext(request.Context()), conn, sHttp.SourceAddress(request), M.Socksaddr{}, nil)
 }
