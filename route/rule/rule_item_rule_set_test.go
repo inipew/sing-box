@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sagernet/sing-box/adapter"
+	C "github.com/sagernet/sing-box/constant"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/x/list"
 
@@ -52,7 +53,9 @@ func (r *ruleSetItemTestRouter) NeighborResolver() adapter.NeighborResolver { re
 func (r *ruleSetItemTestRouter) AppendTracker(adapter.ConnectionTracker)    {}
 func (r *ruleSetItemTestRouter) ResetNetwork()                              {}
 func (r *ruleSetItemTestRouter) Reload()                                    {}
-
+func (r *ruleSetItemTestRouter) DefaultDomainMatchStrategy() C.DomainMatchStrategy {
+	return 0
+}
 type countingRuleSet struct {
 	name string
 	refs atomic.Int32

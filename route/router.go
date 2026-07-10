@@ -51,7 +51,8 @@ type Router struct {
 	trackers          []adapter.ConnectionTracker
 	platformInterface adapter.PlatformInterface
 	started           bool
-	reloadChan        chan<- struct{}
+	reloadChan                 chan<- struct{}
+	defaultDomainMatchStrategy C.DomainMatchStrategy
 }
 
 func NewRouter(ctx context.Context, logFactory log.Factory, options option.RouteOptions, dnsOptions option.DNSOptions, reloadChan chan<- struct{}) *Router {
@@ -88,11 +89,15 @@ func NewRouter(ctx context.Context, logFactory log.Factory, options option.Route
 		rateLimiters:      options.RateLimiters,
 		pauseManager:      service.FromContext[pause.Manager](ctx),
 		platformInterface: service.FromContext[adapter.PlatformInterface](ctx),
-		reloadChan:        reloadChan,
+		reloadChan:                 reloadChan,
+		defaultDomainMatchStrategy: C.DomainMatchStrategy(options.DefaultDomainMatchStrategy),
 	}
 }
 
 func (r *Router) Initialize(rules []option.Rule, ruleSets []option.RuleSet) error {
+	if r.defaultDomainMatchStrategy == C.DomainMatchStrategyFQDNOnly || r.defaultDomainMatchStrategy == C.DomainMatchStrategySniffHostOnly {
+		return E.New("default_domain_match_strategy cannot be fqdn_only or sniffhost_only")
+	}
 	tagSet := make(map[string]bool, len(r.rateLimiters))
 	for i, l := range r.rateLimiters {
 		if l.Tag == "" {
@@ -398,4 +403,8 @@ func (r *Router) resolvePacketLimiter(opt *option.RateLimitActionOptions) *ratel
 		return nil
 	}
 	return r.rateLimitManager.NewForPacketConnection(cfg)
+}
+
+func (r *Router) DefaultDomainMatchStrategy() C.DomainMatchStrategy {
+	return r.defaultDomainMatchStrategy
 }

@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"time"
 
+	C "github.com/sagernet/sing-box/constant"
 	tun "github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	M "github.com/sagernet/sing/common/metadata"
@@ -28,8 +29,8 @@ type Router interface {
 	NeighborResolver() NeighborResolver
 	AppendTracker(tracker ConnectionTracker)
 	ResetNetwork()
-
 	Reload()
+	DefaultDomainMatchStrategy() C.DomainMatchStrategy
 }
 
 type PreMatchAction uint8

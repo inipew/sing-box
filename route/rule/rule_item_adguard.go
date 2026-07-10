@@ -4,33 +4,52 @@ import (
 	"strings"
 
 	"github.com/sagernet/sing-box/adapter"
+	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing/common/domain"
 )
 
 var _ RuleItem = (*AdGuardDomainItem)(nil)
 
 type AdGuardDomainItem struct {
-	matcher *domain.AdGuardMatcher
+	matcher             *domain.AdGuardMatcher
+	domainMatchStrategy C.DomainMatchStrategy
 }
 
-func NewAdGuardDomainItem(ruleLines []string) *AdGuardDomainItem {
+func NewAdGuardDomainItem(ruleLines []string, domainMatchStrategy C.DomainMatchStrategy) *AdGuardDomainItem {
 	return &AdGuardDomainItem{
 		domain.NewAdGuardMatcher(ruleLines),
+		domainMatchStrategy,
 	}
 }
 
-func NewRawAdGuardDomainItem(matcher *domain.AdGuardMatcher) *AdGuardDomainItem {
+func NewRawAdGuardDomainItem(matcher *domain.AdGuardMatcher, domainMatchStrategy C.DomainMatchStrategy) *AdGuardDomainItem {
 	return &AdGuardDomainItem{
 		matcher,
+		domainMatchStrategy,
 	}
 }
 
 func (r *AdGuardDomainItem) Match(metadata *adapter.InboundContext) bool {
 	var domainHost string
-	if metadata.Domain != "" {
+	switch r.domainMatchStrategy {
+	case C.DomainMatchStrategyPreferFQDN:
+		if metadata.Destination.IsDomain() {
+			domainHost = metadata.Destination.Fqdn
+		} else {
+			domainHost = metadata.Domain
+		}
+	case C.DomainMatchStrategyFQDNOnly:
+		if metadata.Destination.IsDomain() {
+			domainHost = metadata.Destination.Fqdn
+		}
+	case C.DomainMatchStrategySniffHostOnly:
 		domainHost = metadata.Domain
-	} else {
-		domainHost = metadata.Destination.Fqdn
+	default:
+		if metadata.Domain != "" {
+			domainHost = metadata.Domain
+		} else {
+			domainHost = metadata.Destination.Fqdn
+		}
 	}
 	if domainHost == "" {
 		return false
