@@ -503,19 +503,14 @@ func (r *Router) preMatchFlow(ctx context.Context, metadata *adapter.InboundCont
 			return continueResult
 		}
 	}
-	chain, err := resolveOutbound(outbound, metadata.Network)
-	if err != nil {
+	outbound, chain, flowAction := r.selectPreMatchOutbound(metadata, outbound, 0)
+	if outbound == nil {
 		return continueResult
 	}
-	outbound = chain[len(chain)-1]
-	flowOutbound, isFlowOutbound := outbound.(adapter.FlowOutbound)
-	if !isFlowOutbound {
-		return continueResult
-	}
-	flowAction := flowOutbound.PreMatchFlow(metadata.Network, metadata.Destination.Addr)
 	if flowAction != adapter.PreMatchFlow {
 		return adapter.PreMatchResult{Action: flowAction, Outbound: outbound}
 	}
+	flowOutbound := outbound.(adapter.FlowOutbound)
 	result := adapter.PreMatchResult{Action: adapter.PreMatchFlow, Outbound: outbound}
 	if metadata.Network == N.NetworkUDP {
 		if metadata.UDPTimeout > 0 {
@@ -531,21 +526,43 @@ func (r *Router) preMatchFlow(ctx context.Context, metadata *adapter.InboundCont
 		}
 	}
 	if metadata.Destination.IsDomain() {
-		if !metadata.FakeIP {
+		if !metadata.FakeIP && !metadata.DestOverride {
 			return continueResult
+		}
+		resolvedByOutbound := false
+		if len(metadata.DestinationAddresses) == 0 {
+			flowResolver, isFlowResolver := outbound.(adapter.FlowOutboundDomainResolver)
+			if isFlowResolver {
+				resolvedByOutbound = true
+				destinationAddresses, resolveErr := r.dns.Lookup(adapter.WithContext(ctx, metadata), metadata.Destination.Fqdn, flowResolver.FlowDomainResolveOptions())
+				if resolveErr != nil {
+					r.logger.WarnContext(ctx, "pre-match: resolve domain destination ", metadata.Destination.Fqdn, " via outbound/", outbound.Type(), "[", outbound.Tag(), "]: ", resolveErr)
+					return adapter.PreMatchResult{Action: adapter.PreMatchReject}
+				}
+				metadata.DestinationAddresses = destinationAddresses
+				r.logger.DebugContext(ctx, "pre-match: resolved domain destination ", metadata.Destination.Fqdn, " to [", strings.Join(F.MapToString(destinationAddresses), " "), "] via outbound/", outbound.Type(), "[", outbound.Tag(), "]")
+			}
+		}
+		isIPv4 := packetDestination.IsIPv4()
+		if !packetDestination.IsIP() && metadata.OriginDestination.IsValid() {
+			isIPv4 = metadata.OriginDestination.IsIPv4()
 		}
 		var newDestination netip.Addr
 		for _, address := range metadata.DestinationAddresses {
-			if address.Is4() == packetDestination.IsIPv4() {
+			if address.Is4() == isIPv4 {
 				newDestination = address
 				break
 			}
 		}
 		if !newDestination.IsValid() {
 			if len(metadata.DestinationAddresses) == 0 {
-				r.logger.WarnContext(ctx, "pre-match: reject ", metadata.Network, " connection from ", metadata.Source.AddrString(), " to fake destination ", metadata.Destination.Fqdn, ": a resolve action is required before routing to outbound/", outbound.Type(), "[", outbound.Tag(), "]")
+				if resolvedByOutbound {
+					r.logger.DebugContext(ctx, "pre-match: reject ", metadata.Network, " connection from ", metadata.Source.AddrString(), " to domain destination ", metadata.Destination.Fqdn, ": no resolved addresses")
+				} else {
+					r.logger.WarnContext(ctx, "pre-match: reject ", metadata.Network, " connection from ", metadata.Source.AddrString(), " to domain destination ", metadata.Destination.Fqdn, ": a resolve action is required before routing to outbound/", outbound.Type(), "[", outbound.Tag(), "]")
+				}
 			} else {
-				r.logger.DebugContext(ctx, "pre-match: reject ", metadata.Network, " connection from ", metadata.Source.AddrString(), " to fake destination ", metadata.Destination.Fqdn, ": no resolved address for this address family")
+				r.logger.DebugContext(ctx, "pre-match: reject ", metadata.Network, " connection from ", metadata.Source.AddrString(), " to domain destination ", metadata.Destination.Fqdn, ": no resolved address for this address family")
 			}
 			return adapter.PreMatchResult{Action: adapter.PreMatchReject}
 		}
@@ -579,6 +596,50 @@ func (r *Router) preMatchFlow(ctx context.Context, metadata *adapter.InboundCont
 		return multiFlowTracker(flowTrackers)
 	}
 	return result
+}
+
+func (r *Router) selectPreMatchOutbound(metadata *adapter.InboundContext, outbound adapter.Outbound, depth int) (adapter.Outbound, []adapter.Outbound, adapter.PreMatchAction) {
+	if outbound == nil || depth > 8 {
+		return nil, nil, adapter.PreMatchContinue
+	}
+	if preMatchGroup, isPreMatchGroup := outbound.(adapter.PreMatchOutboundGroup); isPreMatchGroup {
+		var chain []adapter.Outbound
+		var action adapter.PreMatchAction
+		finalOutbound, _ := preMatchGroup.SelectPreMatchOutbound(metadata, func(selectedOutbound adapter.Outbound) (adapter.Outbound, adapter.PreMatchAction) {
+			var subChain []adapter.Outbound
+			var subFinal adapter.Outbound
+			subFinal, subChain, action = r.selectPreMatchOutbound(metadata, selectedOutbound, depth+1)
+			chain = append([]adapter.Outbound{outbound}, subChain...)
+			return subFinal, action
+		})
+		if finalOutbound == nil || action == adapter.PreMatchContinue {
+			return nil, nil, adapter.PreMatchContinue
+		}
+		if len(chain) == 0 {
+			chain = []adapter.Outbound{outbound, finalOutbound}
+		}
+		return finalOutbound, chain, action
+	}
+	if group, isGroup := outbound.(adapter.OutboundGroup); isGroup {
+		selectedOutbound := group.Selected(metadata.Network)
+		if selectedOutbound == nil {
+			return nil, nil, adapter.PreMatchContinue
+		}
+		finalOutbound, subChain, action := r.selectPreMatchOutbound(metadata, selectedOutbound, depth+1)
+		return finalOutbound, append([]adapter.Outbound{outbound}, subChain...), action
+	}
+	if !common.Contains(outbound.Network(), metadata.Network) {
+		return nil, nil, adapter.PreMatchContinue
+	}
+	flowOutbound, isFlowOutbound := outbound.(adapter.FlowOutbound)
+	if !isFlowOutbound {
+		return nil, nil, adapter.PreMatchContinue
+	}
+	flowAction := flowOutbound.PreMatchFlow(metadata.Network, metadata.Destination.Addr)
+	if flowAction == adapter.PreMatchContinue {
+		return nil, nil, adapter.PreMatchContinue
+	}
+	return outbound, []adapter.Outbound{outbound}, flowAction
 }
 
 func (r *Router) prepareMatchMetadata(ctx context.Context, metadata *adapter.InboundContext) error {

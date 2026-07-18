@@ -92,7 +92,7 @@ func TestURLTestSelectionKeepsCurrentWithinTolerance(t *testing.T) {
 		history:   history,
 		tolerance: 50,
 	}
-	group.selectedOutboundTCP.Store(current)
+	group.selectedOutboundTCP = current
 
 	selected, available := group.Select(N.NetworkTCP)
 	require.True(t, available)
@@ -114,11 +114,10 @@ func TestURLTestFallbackSelectsFirstAvailable(t *testing.T) {
 	history := urltest.NewHistoryStorage()
 	history.StoreURLTestHistory(first.tag, &adapter.URLTestHistory{Time: time.Now(), Delay: 100})
 	history.StoreURLTestHistory(second.tag, &adapter.URLTestHistory{Time: time.Now(), Delay: 20})
-	group := &URLTestGroup{
+	group := &FallbackGroup{
 		outbound:  manager,
 		outbounds: []adapter.Outbound{first, second},
 		history:   history,
-		fallback:  URLTestFallback{enabled: true},
 	}
 
 	selected, available := group.Select(N.NetworkTCP)
