@@ -85,6 +85,7 @@ func box_apple_http_verify_pinned_certificate(certificateHashValues *C.uint8_t, 
 
 type appleSessionConfig struct {
 	serverName               string
+	certificateServerName    string
 	minVersion               uint16
 	maxVersion               uint16
 	insecure                 bool
@@ -195,12 +196,13 @@ func newAppleSessionConfig(ctx context.Context, options option.HTTPClientOptions
 	}
 
 	config := appleSessionConfig{
-		serverName: tlsOptions.ServerName,
-		minVersion: validated.MinVersion,
-		maxVersion: validated.MaxVersion,
-		insecure:   tlsOptions.Insecure || len(tlsOptions.CertificateSHA256) > 0 || len(tlsOptions.CertificatePublicKeySHA256) > 0,
-		anchorOnly: validated.Exclusive,
-		store:      validated.Store,
+		serverName:            tlsOptions.ServerName,
+		certificateServerName: tlsOptions.CertificateServerName,
+		minVersion:            validated.MinVersion,
+		maxVersion:            validated.MaxVersion,
+		insecure:              tlsOptions.Insecure || len(tlsOptions.CertificateSHA256) > 0 || len(tlsOptions.CertificatePublicKeySHA256) > 0,
+		anchorOnly:            validated.Exclusive,
+		store:                 validated.Store,
 	}
 	if len(validated.UserPEM) > 0 {
 		userAnchors, anchorsErr := newAppleUserAnchors(validated.UserPEM)
@@ -262,6 +264,11 @@ func (s *appleTransportShared) newSession() (*C.box_apple_http_session_t, error)
 	defer C.free(unsafe.Pointer(cProxyUsername))
 	cProxyPassword := C.CString(s.bridge.Password())
 	defer C.free(unsafe.Pointer(cProxyPassword))
+	var cCertificateServerName *C.char
+	if s.config.certificateServerName != "" {
+		cCertificateServerName = C.CString(s.config.certificateServerName)
+		defer C.free(unsafe.Pointer(cCertificateServerName))
+	}
 	var pinnedCertificatePointer *C.uint8_t
 	if len(s.config.pinnedCertificateSHA256s) > 0 {
 		pinnedCertificatePointer = (*C.uint8_t)(C.CBytes(s.config.pinnedCertificateSHA256s))
@@ -283,6 +290,7 @@ func (s *appleTransportShared) newSession() (*C.box_apple_http_session_t, error)
 		proxy_port:                    C.int(s.bridge.Port()),
 		proxy_username:                cProxyUsername,
 		proxy_password:                cProxyPassword,
+		certificate_server_name:       cCertificateServerName,
 		min_tls_version:               C.uint16_t(s.config.minVersion),
 		max_tls_version:               C.uint16_t(s.config.maxVersion),
 		insecure:                      C.bool(s.config.insecure),
