@@ -30,7 +30,7 @@ type rttEntry struct {
 	lastQueryTime time.Time // wall time of last recorded sample or failure
 }
 
-func newRTTEstimator(sampleSize int) RTTEstimator {
+func NewRTTEstimator(sampleSize int) RTTEstimator {
 	if sampleSize <= 0 {
 		sampleSize = defaultSampleSize
 	}

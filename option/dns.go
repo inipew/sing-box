@@ -218,10 +218,6 @@ type _RemoteHTTPSDNSServerOptions struct {
 	Headers badoption.HTTPHeader `json:"headers,omitempty"`
 }
 
-type GroupDNSServerOptions struct {
-	Servers []string `json:"servers"`
-}
-
 type RemoteHTTPSDNSServerOptions _RemoteHTTPSDNSServerOptions
 
 func (o *RemoteHTTPSDNSServerOptions) MarshalJSONContext(ctx context.Context) ([]byte, error) {

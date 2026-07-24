@@ -50,6 +50,12 @@ func (f *fakeTransport) Exchange(ctx context.Context, msg *mDNS.Msg) (*mDNS.Msg,
 	return resp, nil
 }
 
+func (f *fakeTransport) ExchangeAsync(ctx context.Context, msg *mDNS.Msg, callback func(response *mDNS.Msg, err error)) {
+	go func() {
+		callback(f.Exchange(ctx, msg))
+	}()
+}
+
 func makeMsg() *mDNS.Msg {
 	msg := new(mDNS.Msg)
 	msg.SetQuestion("example.com.", mDNS.TypeA)
@@ -145,41 +151,31 @@ func TestStrategyRoundRobin(t *testing.T) {
 	}
 }
 
-func TestStrategyP2(t *testing.T) {
+func TestStrategyWeighted(t *testing.T) {
 	e := rtt(t)
-	e.Record("a", 10*time.Millisecond)
-	e.Record("b", 20*time.Millisecond)
-	e.Record("c", 300*time.Millisecond)
+	e.Record("fast", 10*time.Millisecond)
+	e.Record("slow", 500*time.Millisecond)
 
-	s := group.ExportNewStrategy("p2")
-	for i := 0; i < 20; i++ {
-		got := s.Select([]string{"a", "b", "c"}, e)
-		if got[0] == "c" {
-			t.Error("p2 selected 'c' which is not in top-2")
-		}
-	}
-}
-
-func TestStrategyPH(t *testing.T) {
-	e := rtt(t)
-	e.Record("a", 10*time.Millisecond)
-	e.Record("b", 20*time.Millisecond)
-	e.Record("c", 300*time.Millisecond)
-	e.Record("d", 400*time.Millisecond)
-
-	s := group.ExportNewStrategy("ph")
-	for i := 0; i < 20; i++ {
-		got := s.Select([]string{"a", "b", "c", "d"}, e)
-		if got[0] == "c" || got[0] == "d" {
-			t.Errorf("ph selected bottom-half server %q", got[0])
-		}
-	}
-}
-
-func TestStrategyPN(t *testing.T) {
-	s := group.ExportNewStrategy("p3")
+	s := group.ExportNewStrategy("weighted")
 	if s == nil {
-		t.Fatal("p3 strategy should be valid")
+		t.Fatal("weighted strategy should be valid")
+	}
+	fastCount := 0
+	for i := 0; i < 100; i++ {
+		got := s.Select([]string{"fast", "slow"}, e)
+		if got[0] == "fast" {
+			fastCount++
+		}
+	}
+	if fastCount < 60 {
+		t.Errorf("weighted strategy selected fast server only %d/100 times", fastCount)
+	}
+}
+
+func TestStrategyEpsilonGreedy(t *testing.T) {
+	s := group.ExportNewStrategy("epsilon_greedy")
+	if s == nil {
+		t.Fatal("epsilon_greedy strategy should be valid")
 	}
 }
 

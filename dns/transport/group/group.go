@@ -108,7 +108,7 @@ func NewGroupTransport(ctx context.Context, logger log.ContextLogger, tag string
 		maxRetries:    options.MaxRetries,
 		detour:        options.Detour,
 		hcOptions:     options.HealthCheck,
-		rtt:           newRTTEstimator(sampleSize),
+		rtt:           NewRTTEstimator(sampleSize),
 	}, nil
 }
 
@@ -287,7 +287,7 @@ func (t *GroupTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
 	if clone.hcOptions != nil {
 		sampleSize = clone.hcOptions.SampleSize
 	}
-	clone.rtt = newRTTEstimator(sampleSize)
+	clone.rtt = NewRTTEstimator(sampleSize)
 	return &clone
 }
 
