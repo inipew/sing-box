@@ -14,6 +14,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common"
@@ -181,9 +182,25 @@ func (e *Endpoint) Start(resolve bool) error {
 			if egressPoolOptions.Logger == nil {
 				egressPoolOptions.Logger = e.options.Logger
 			}
-			egressPoolOptions.Control = listenerControl
-			e.egressPool = tun.NewUDPEgressPool(egressPoolOptions)
-			standardBind.SetEgressProvider(e.egressPool)
+			networkManager := service.FromContext[adapter.NetworkManager](e.options.Context)
+			if networkManager != nil {
+				if egressPoolOptions.InterfaceFinder == nil {
+					egressPoolOptions.InterfaceFinder = networkManager.InterfaceFinder()
+				}
+				if egressPoolOptions.InterfaceMonitor == nil {
+					egressPoolOptions.InterfaceMonitor = networkManager.InterfaceMonitor()
+				}
+				if egressPoolOptions.IsExempt == nil {
+					egressPoolOptions.IsExempt = func() bool {
+						return networkManager.AutoRedirectOutputMark() != 0
+					}
+				}
+			}
+			if egressPoolOptions.InterfaceFinder != nil && egressPoolOptions.InterfaceMonitor != nil {
+				egressPoolOptions.Control = listenerControl
+				e.egressPool = tun.NewUDPEgressPool(egressPoolOptions)
+				standardBind.SetEgressProvider(e.egressPool)
+			}
 		}
 		bind = standardBind
 	} else {

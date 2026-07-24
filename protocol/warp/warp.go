@@ -206,13 +206,28 @@ func (s *Warp) initialize() error {
 		peerPublicKey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
 	}
 
-	endpoint, err := wg.NewEndpoint(wg.EndpointOptions{
-		Context: s.ctx,
-		Logger:  s.logger,
-		EgressPoolOptions: tun.UDPEgressPoolOptions{
+	networkManager := service.FromContext[adapter.NetworkManager](s.ctx)
+	var egressPoolOptions tun.UDPEgressPoolOptions
+	if networkManager != nil {
+		egressPoolOptions = tun.UDPEgressPoolOptions{
+			Logger:           s.logger,
+			InterfaceFinder:  networkManager.InterfaceFinder(),
+			InterfaceMonitor: networkManager.InterfaceMonitor(),
+			IsExempt: func() bool {
+				return networkManager.AutoRedirectOutputMark() != 0
+			},
+		}
+	} else {
+		egressPoolOptions = tun.UDPEgressPoolOptions{
 			Logger: s.logger,
-		},
-		Dialer: s.outboundDialer,
+		}
+	}
+
+	endpoint, err := wg.NewEndpoint(wg.EndpointOptions{
+		Context:           s.ctx,
+		Logger:            s.logger,
+		EgressPoolOptions: egressPoolOptions,
+		Dialer:            s.outboundDialer,
 		CreateDialer: func(interfaceName string) N.Dialer {
 			return common.Must1(dialer.NewDefault(s.ctx, option.DialerOptions{
 				BindInterface: interfaceName,
