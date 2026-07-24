@@ -23,6 +23,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	wg "github.com/sagernet/sing-box/transport/wireguard"
+	tun "github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -208,7 +209,10 @@ func (s *Warp) initialize() error {
 	endpoint, err := wg.NewEndpoint(wg.EndpointOptions{
 		Context: s.ctx,
 		Logger:  s.logger,
-		Dialer:  s.outboundDialer,
+		EgressPoolOptions: tun.UDPEgressPoolOptions{
+			Logger: s.logger,
+		},
+		Dialer: s.outboundDialer,
 		CreateDialer: func(interfaceName string) N.Dialer {
 			return common.Must1(dialer.NewDefault(s.ctx, option.DialerOptions{
 				BindInterface: interfaceName,

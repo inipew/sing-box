@@ -178,6 +178,9 @@ func (e *Endpoint) Start(resolve bool) error {
 		}
 		if egressEnabled {
 			egressPoolOptions := e.options.EgressPoolOptions
+			if egressPoolOptions.Logger == nil {
+				egressPoolOptions.Logger = e.options.Logger
+			}
 			egressPoolOptions.Control = listenerControl
 			e.egressPool = tun.NewUDPEgressPool(egressPoolOptions)
 			standardBind.SetEgressProvider(e.egressPool)
