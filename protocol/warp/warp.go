@@ -23,7 +23,6 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	wg "github.com/sagernet/sing-box/transport/wireguard"
-	tun "github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -41,7 +40,6 @@ func RegisterOutbound(registry *outbound.Registry) {
 
 var (
 	_ adapter.Outbound                   = (*Warp)(nil)
-	_ adapter.DirectRouteOutbound        = (*Warp)(nil)
 	_ dialer.PacketDialerWithDestination = (*Warp)(nil)
 )
 
@@ -324,12 +322,6 @@ func (s *Warp) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.P
 	return packetConn, nil
 }
 
-func (s *Warp) NewDirectRouteConnection(metadata adapter.InboundContext, routeContext tun.DirectRouteContext, timeout time.Duration) (tun.DirectRouteDestination, error) {
-	if !s.started.Load() {
-		return nil, E.New("WARP is not ready yet")
-	}
-	return s.endpoint.NewDirectRouteConnection(metadata, routeContext, timeout)
-}
 
 // lookupDestination resolves a domain using the configured DNS router first,
 // falling back to the system resolver. All addresses are .Unmap()-ed to
