@@ -1,4 +1,4 @@
-//go:build !with_wireguard
+//go:build with_wireguard && !with_warp
 
 package include
 
@@ -13,11 +13,8 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 )
 
-func registerWireGuardEndpoint(registry *endpoint.Registry) {
-	endpoint.Register[option.WireGuardEndpointOptions](registry, C.TypeWireGuard, func(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.WireGuardEndpointOptions) (adapter.Endpoint, error) {
-		return nil, E.New(`WireGuard is not included in this build, rebuild with -tags with_wireguard`)
-	})
+func registerWARPEndpoint(registry *endpoint.Registry) {
 	endpoint.Register[option.WireGuardWARPEndpointOptions](registry, C.TypeWarp, func(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.WireGuardWARPEndpointOptions) (adapter.Endpoint, error) {
-		return nil, E.New(`WARP requires WireGuard; rebuild with -tags with_wireguard,with_warp`)
+		return nil, E.New(`WARP is not included in this build, rebuild with -tags with_warp`)
 	})
 }

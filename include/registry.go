@@ -182,4 +182,7 @@ func registerStubForRemovedOutbounds(registry *outbound.Registry) {
 	outbound.Register[option.StubOptions](registry, C.TypeWireGuard, func(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.StubOptions) (adapter.Outbound, error) {
 		return nil, E.New("WireGuard outbound is deprecated in sing-box 1.11.0 and removed in sing-box 1.13.0, use WireGuard endpoint instead")
 	})
+	outbound.Register[option.StubOptions](registry, C.TypeWarp, func(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.StubOptions) (adapter.Outbound, error) {
+		return nil, E.New("WARP outbound is deprecated, use WARP endpoint instead")
+	})
 }
