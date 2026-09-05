@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/experimental"
 	"github.com/sagernet/sing-box/experimental/clashmode"
+	"github.com/sagernet/sing-box/experimental/deprecated"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -57,7 +59,14 @@ type Server struct {
 	externalController       bool
 	externalUI               string
 	externalUIDownloadURL    string
+	externalUIHTTPClient     *option.HTTPClientOptions
 	externalUIDownloadDetour string
+	externalUIUpdateInterval time.Duration
+	cacheFile                adapter.CacheFile
+	lastEtag                 string
+	lastUpdated              time.Time
+	ticker                   *time.Ticker
+	externalUIAccess         sync.Mutex
 }
 
 func NewServer(ctx context.Context, logFactory log.ObservableFactory, options option.ClashAPIOptions) (adapter.LifecycleService, error) {
@@ -74,6 +83,13 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		return nil, E.New("missing clash mode manager")
 	}
 	chiRouter := chi.NewRouter()
+	updateInterval := time.Duration(options.ExternalUIUpdateInterval)
+	if updateInterval <= 0 {
+		updateInterval = 0
+	}
+	if updateInterval > 0 && updateInterval < time.Hour {
+		updateInterval = time.Hour
+	}
 	s := &Server{
 		ctx:       ctx,
 		network:   service.FromContext[adapter.NetworkManager](ctx),
@@ -92,6 +108,11 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		logDebug:                 logFactory.Level() >= log.LevelDebug,
 		externalController:       options.ExternalController != "",
 		externalUIDownloadURL:    options.ExternalUIDownloadURL,
+		externalUIHTTPClient:     options.ExternalUIHTTPClient,
+		externalUIUpdateInterval: updateInterval,
+		cacheFile:                service.FromContext[adapter.CacheFile](ctx),
+
+		//nolint:staticcheck
 		externalUIDownloadDetour: options.ExternalUIDownloadDetour,
 	}
 	//goland:noinspection GoDeprecation
@@ -128,6 +149,10 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		r.Mount("/cache", cacheRouter(ctx))
 		r.Mount("/dns", dnsRouter(s.dnsRouter))
 
+		if service.FromContext[adapter.PlatformInterface](ctx) == nil {
+			r.Mount("/restart", restartRouter(s))
+		}
+
 		s.setupMetaAPI(r)
 	})
 	if options.ExternalUI != "" {
@@ -149,36 +174,71 @@ func (s *Server) Name() string {
 }
 
 func (s *Server) Start(stage adapter.StartStage, scope *adapter.Scope) error {
-	if stage != adapter.StartStateStarted {
-		return nil
-	}
-	if s.externalController {
-		s.checkAndDownloadExternalUI()
-		var (
-			listener net.Listener
-			err      error
-		)
-		for range 3 {
-			listener, err = net.Listen(M.NetworkFromNetAddr(N.NetworkTCP, M.ParseSocksaddr(s.httpServer.Addr).Addr), s.httpServer.Addr)
-			if runtime.GOOS == "android" && errors.Is(err, syscall.EADDRINUSE) {
-				time.Sleep(100 * time.Millisecond)
-				continue
-			}
-			break
+	switch stage {
+	case adapter.StartStateStart:
+		if s.externalUIDownloadDetour != "" && (s.externalUIHTTPClient == nil || s.externalUIHTTPClient.IsEmpty()) {
+			deprecated.Report(s.ctx, deprecated.OptionLegacyClashAPIExternalUIDownloadDetour)
 		}
-		if err != nil {
-			return E.Cause(err, "external controller listen error")
-		}
-		scope.Add(s.httpServer.Close)
-		s.logger.Info("restful api listening at ", listener.Addr())
-		go func() {
-			err = s.httpServer.Serve(listener)
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				s.logger.Error("external controller serve error: ", err)
+	case adapter.StartStateStarted:
+		if s.externalController {
+			if s.externalUI != "" && s.externalUIUpdateInterval != 0 {
+				if s.cacheFile != nil {
+					if savedExternalUI := s.cacheFile.LoadExternalUI("ExternalUI"); savedExternalUI != nil {
+						s.lastUpdated = savedExternalUI.LastUpdated
+						s.lastEtag = savedExternalUI.LastEtag
+					}
+				}
 			}
-		}()
+			s.checkAndDownloadExternalUI(false)
+			if s.externalUIUpdateInterval != 0 && !s.lastUpdated.IsZero() {
+				s.ticker = time.NewTicker(s.externalUIUpdateInterval)
+				scope.Add(func() error {
+					s.ticker.Stop()
+					return nil
+				})
+				go s.loopUpdate()
+			}
+			var (
+				listener net.Listener
+				err      error
+			)
+			for range 3 {
+				listener, err = net.Listen(M.NetworkFromNetAddr(N.NetworkTCP, M.ParseSocksaddr(s.httpServer.Addr).Addr), s.httpServer.Addr)
+				if runtime.GOOS == "android" && errors.Is(err, syscall.EADDRINUSE) {
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+				break
+			}
+			if err != nil {
+				return E.Cause(err, "external controller listen error")
+			}
+			scope.Add(s.httpServer.Close)
+			s.logger.Info("restful api listening at ", listener.Addr())
+			go func() {
+				err = s.httpServer.Serve(listener)
+				if err != nil && !errors.Is(err, http.ErrServerClosed) {
+					s.logger.Error("external controller serve error: ", err)
+				}
+			}()
+		}
 	}
 	return nil
+}
+
+func (s *Server) loopUpdate() {
+	if time.Since(s.lastUpdated) > s.externalUIUpdateInterval {
+		s.checkAndDownloadExternalUI(true)
+	}
+	for {
+		runtime.GC()
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-s.ticker.C:
+			s.checkAndDownloadExternalUI(true)
+		}
+	}
 }
 
 func authentication(serverSecret string) func(next http.Handler) http.Handler {
