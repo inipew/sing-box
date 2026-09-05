@@ -27,6 +27,7 @@ type defaultFactory struct {
 	needConsole       bool
 	needObservable    bool
 	level             Level
+	filter            Filter
 	subscriber        *observable.Subscriber[Entry]
 	observer          *observable.Observer[Entry]
 	startAccess       sync.Mutex
@@ -130,6 +131,10 @@ func (f *defaultFactory) SetLevel(level Level) {
 	f.level = level
 }
 
+func (f *defaultFactory) SetFilter(filter Filter) {
+	f.filter = filter
+}
+
 func (f *defaultFactory) Logger() ContextLogger {
 	return f.NewLogger("")
 }
@@ -147,14 +152,27 @@ func (f *defaultFactory) UnSubscribe(sub observable.Subscription[Entry]) {
 }
 
 func (f *defaultFactory) output(ctx context.Context, level Level, tag string, message string, timestamp time.Time) {
+	isMuted := f.filter != nil && f.filter.ShouldMute(level, tag, message)
 	if level <= f.level && (f.needConsole || level == LevelPanic || level == LevelFatal) {
-		formatted := f.formatter.Format(ctx, level, tag, message, timestamp)
-		if level == LevelPanic {
-			panic(formatted)
-		}
-		f.writer.Write([]byte(formatted))
-		if level == LevelFatal {
-			os.Exit(1)
+		if isMuted {
+			if level == LevelPanic {
+				formatted := f.formatter.Format(ctx, level, tag, message, timestamp)
+				panic(formatted)
+			}
+			if level == LevelFatal {
+				formatted := f.formatter.Format(ctx, level, tag, message, timestamp)
+				f.writer.Write([]byte(formatted))
+				os.Exit(1)
+			}
+		} else {
+			formatted := f.formatter.Format(ctx, level, tag, message, timestamp)
+			if level == LevelPanic {
+				panic(formatted)
+			}
+			f.writer.Write([]byte(formatted))
+			if level == LevelFatal {
+				os.Exit(1)
+			}
 		}
 	}
 	if f.needObservable {
