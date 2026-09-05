@@ -26,8 +26,11 @@ func QUICClientHello(ctx context.Context, metadata *adapter.InboundContext, pack
 	if err != nil {
 		return err
 	}
-	if typeByte&0x40 == 0 {
-		return E.New("bad type byte")
+	if typeByte&0xC0 != 0xC0 {
+		return E.New("bad type byte: not a long header")
+	}
+	if len(packet) < 1200 {
+		return E.New("packet too small for QUIC Initial")
 	}
 	var versionNumber uint32
 	err = binary.Read(reader, binary.BigEndian, &versionNumber)
@@ -38,8 +41,15 @@ func QUICClientHello(ctx context.Context, metadata *adapter.InboundContext, pack
 		return E.New("bad version")
 	}
 	packetType := (typeByte & 0x30) >> 4
-	if packetType == 0 && versionNumber == qtls.Version2 || packetType == 2 && versionNumber != qtls.Version2 || packetType > 2 {
-		return E.New("bad packet type")
+	switch versionNumber {
+	case qtls.Version2:
+		if packetType != 1 {
+			return E.New("not an Initial packet")
+		}
+	default:
+		if packetType != 0 {
+			return E.New("not an Initial packet")
+		}
 	}
 
 	destConnIDLen, err := reader.ReadByte()
@@ -62,6 +72,10 @@ func QUICClientHello(ctx context.Context, metadata *adapter.InboundContext, pack
 		return err
 	}
 
+	if srcConnIDLen > 20 {
+		return E.New("bad source connection id length")
+	}
+
 	_, err = io.CopyN(io.Discard, reader, int64(srcConnIDLen))
 	if err != nil {
 		return err
@@ -70,6 +84,10 @@ func QUICClientHello(ctx context.Context, metadata *adapter.InboundContext, pack
 	tokenLen, err := qtls.ReadUvarint(reader)
 	if err != nil {
 		return err
+	}
+
+	if tokenLen > uint64(reader.Len()) {
+		return os.ErrInvalid
 	}
 
 	_, err = io.CopyN(io.Discard, reader, int64(tokenLen))
@@ -83,7 +101,7 @@ func QUICClientHello(ctx context.Context, metadata *adapter.InboundContext, pack
 	}
 
 	hdrLen := int(reader.Size()) - reader.Len()
-	if hdrLen+int(packetLen) > len(packet) {
+	if packetLen > uint64(len(packet)) || hdrLen+int(packetLen) > len(packet) {
 		return os.ErrInvalid
 	}
 
@@ -245,6 +263,9 @@ func QUICClientHello(ctx context.Context, metadata *adapter.InboundContext, pack
 			if err != nil {
 				return err
 			}
+			if int(length) > decryptedReader.Len() {
+				return os.ErrInvalid
+			}
 			index := len(decrypted) - decryptedReader.Len()
 			fragments = append(fragments, qCryptoFragment{offset, length, decrypted[index : index+int(length)]})
 			_, err = decryptedReader.Seek(int64(length), io.SeekCurrent)
@@ -272,6 +293,9 @@ func QUICClientHello(ctx context.Context, metadata *adapter.InboundContext, pack
 		default:
 			return os.ErrInvalid
 		}
+	}
+	if len(fragments) == 0 && metadata.SniffContext == nil {
+		return E.New("no crypto frame found")
 	}
 	if metadata.SniffContext != nil {
 		fragments = append(fragments, metadata.SniffContext.([]qCryptoFragment)...)
@@ -306,7 +330,7 @@ find:
 		metadata.SniffContext = fragments
 		return E.Cause1(ErrNeedMoreData, err)
 	}
-	metadata.Domain = fingerprint.ServerName
+	metadata.SniffHost = fingerprint.ServerName
 	for metadata.Client == "" {
 		if len(frameTypeList) == 1 {
 			metadata.Client = C.ClientFirefox
@@ -370,4 +394,15 @@ type qCryptoFragment struct {
 	offset  uint64
 	length  uint64
 	payload []byte
+}
+
+func QUICShortHeader(_ context.Context, metadata *adapter.InboundContext, packet []byte) error {
+	if len(packet) == 0 {
+		return E.New("empty packet")
+	}
+	if packet[0]&0xc0 != 0x40 {
+		return E.New("not a QUIC short header packet")
+	}
+	metadata.Protocol = C.ProtocolQUIC
+	return nil
 }
