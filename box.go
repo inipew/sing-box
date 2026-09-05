@@ -63,6 +63,7 @@ type Box struct {
 	referenceManager    *route.ReferenceManager
 	httpClientService   adapter.LifecycleService
 	internalService     []adapter.LifecycleService
+	reloadChan          chan struct{}
 	done                chan struct{}
 }
 
@@ -114,6 +115,7 @@ func Context(
 
 func New(options Options) (*Box, error) {
 	createdAt := time.Now()
+	reloadChan := make(chan struct{}, 1)
 	ctx := options.Context
 	if ctx == nil {
 		ctx = context.Background()
@@ -190,6 +192,11 @@ func New(options Options) (*Box, error) {
 	service.MustRegister[log.Factory](ctx, logFactory)
 
 	var internalServices []adapter.LifecycleService
+	if needCacheFile {
+		cacheFile := cachefile.New(ctx, logFactory.NewLogger("cache-file"), common.PtrValueOrDefault(experimentalOptions.CacheFile))
+		service.MustRegister[adapter.CacheFile](ctx, cacheFile)
+		internalServices = append(internalServices, cacheFile)
+	}
 	routeOptions := common.PtrValueOrDefault(options.Route)
 	certificateOptions := common.PtrValueOrDefault(options.Certificate)
 	if C.IsAndroid || certificateOptions.Store != "" && certificateOptions.Store != C.CertificateStoreSystem ||
@@ -239,7 +246,7 @@ func New(options Options) (*Box, error) {
 	httpClientManager := httpclient.NewManager(ctx, logFactory.NewLogger("httpclient"), options.HTTPClients, routeOptions.DefaultHTTPClient)
 	service.MustRegister[adapter.HTTPClientManager](ctx, httpClientManager)
 	httpClientService := adapter.LifecycleService(httpClientManager)
-	router := route.NewRouter(ctx, logFactory, routeOptions, dnsOptions)
+	router := route.NewRouter(ctx, logFactory, routeOptions, dnsOptions, reloadChan)
 	service.MustRegister[adapter.Router](ctx, router)
 	err = router.Initialize(routeOptions.Rules, routeOptions.RuleSet)
 	if err != nil {
@@ -425,11 +432,7 @@ func New(options Options) (*Box, error) {
 			return nil, E.Cause(err, "initialize platform interface")
 		}
 	}
-	if needCacheFile {
-		cacheFile := cachefile.New(ctx, logFactory.NewLogger("cache-file"), common.PtrValueOrDefault(experimentalOptions.CacheFile))
-		service.MustRegister[adapter.CacheFile](ctx, cacheFile)
-		internalServices = append(internalServices, cacheFile)
-	}
+
 	if needClashAPI {
 		clashServer, err := experimental.NewClashServer(ctx, logFactory.(log.ObservableFactory), common.PtrValueOrDefault(experimentalOptions.ClashAPI))
 		if err != nil {
@@ -489,6 +492,7 @@ func New(options Options) (*Box, error) {
 		logFactory:          logFactory,
 		logger:              logFactory.Logger(),
 		internalService:     internalServices,
+		reloadChan:          reloadChan,
 		done:                make(chan struct{}),
 	}, nil
 }
@@ -552,7 +556,10 @@ func (s *Box) preStart() error {
 	if err != nil {
 		return err
 	}
-	err = adapter.Start(s.ctx, s.logger, adapter.StartStateStart, s.outbound, s.dnsTransport, s.network, s.connection)
+	// dnsTransport must start before outbound so that DNS transports (including
+	// GroupTransport members) are fully ready when outbounds such as warp perform
+	// DNS lookups during their StartStateStart initialization phase.
+	err = adapter.Start(s.ctx, s.logger, adapter.StartStateStart, s.dnsTransport, s.outbound, s.network, s.connection)
 	if err != nil {
 		return err
 	}
@@ -695,4 +702,8 @@ func (s *Box) CloseIdleConnections() {
 
 func (s *Box) LogFactory() log.Factory {
 	return s.logFactory
+}
+
+func (s *Box) ReloadChan() <-chan struct{} {
+	return s.reloadChan
 }
