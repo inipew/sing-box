@@ -49,6 +49,17 @@ func InitializeDetour(dialer N.Dialer) error {
 	return common.Error(detourDialer.Dialer())
 }
 
+// DetourTag returns the detour tag of a DetourDialer, or an empty string
+// if the given dialer is not a DetourDialer. Useful for detecting when a
+// transport already has its own detour configured.
+func DetourTag(d N.Dialer) string {
+	detourDialer, ok := common.Cast[*DetourDialer](d)
+	if !ok {
+		return ""
+	}
+	return detourDialer.detour
+}
+
 func (d *DetourDialer) Dialer() (N.Dialer, error) {
 	d.initOnce.Do(d.init)
 	return d.dialer, d.initErr
