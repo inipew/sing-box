@@ -9,6 +9,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/logger"
+	N "github.com/sagernet/sing/common/network"
 
 	"github.com/miekg/dns"
 )
@@ -82,6 +83,35 @@ type DNSTransportWithConfiguration interface {
 type DNSTransportWithEnvironment interface {
 	DNSTransport
 	Environment() []string
+}
+
+type DNSTransportWithSearchDomain interface {
+	DNSTransport
+	HasSearchDomain() bool
+}
+
+// DNSTransportWithDialerOverride is implemented by transports that can be
+// cloned with a different dialer (e.g., for group-level detour override).
+type DNSTransportWithDialerOverride interface {
+	DNSTransport
+	RawDialer() N.Dialer
+	WithDialer(dialer N.Dialer) DNSTransport
+}
+
+// DNSTransportWithStats is optionally implemented by group transports that
+// track per-member latency and health metrics (e.g. for dashboard/API use).
+type DNSTransportWithStats interface {
+	DNSTransport
+	// Stats returns a snapshot of RTT and health data for each member.
+	Stats() []DNSTransportMemberStats
+}
+
+type DNSTransportMemberStats struct {
+	Tag           string
+	AverageRTTMs  float64
+	JitterMs      float64
+	Failures      int
+	LastQueryTime time.Time
 }
 
 type DNSTransportRegistry interface {
