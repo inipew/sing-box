@@ -67,5 +67,8 @@ func New(options Options) (Factory, error) {
 	} else {
 		factory.SetLevel(LevelTrace)
 	}
+	if logOptions.MuteNoise == nil || *logOptions.MuteNoise {
+		factory.SetFilter(NewNoiseFilter(LevelInfo, logOptions.MutePatterns...))
+	}
 	return factory, nil
 }
