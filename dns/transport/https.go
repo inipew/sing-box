@@ -46,10 +46,12 @@ func RegisterHTTPS(registry *dns.TransportRegistry) {
 type HTTPSTransport struct {
 	dns.TransportAdapter
 	logger           logger.ContextLogger
+	rawDialer        N.Dialer    // dialer before TLS wrapping; used for WithDialer cloning
+	serverAddr       M.Socksaddr // resolved server address; used for WithDialer cloning
+	tlsConfig        tls.Config  // used for WithDialer cloning
 	dialer           N.Dialer
 	destination      *url.URL
 	headers          http.Header
-	serverAddr       M.Socksaddr
 	fallback         *atomic.Bool
 	keepIdle         atomic.Bool
 	transportAccess  sync.Mutex
@@ -121,14 +123,15 @@ func NewHTTPS(ctx context.Context, logger log.ContextLogger, tag string, options
 func NewHTTPSRaw(
 	adapter dns.TransportAdapter,
 	logger log.ContextLogger,
-	dialer N.Dialer,
+	rawDialer N.Dialer,
 	destination *url.URL,
 	headers http.Header,
 	serverAddr M.Socksaddr,
 	tlsConfig tls.Config,
 ) *HTTPSTransport {
+	actualDialer := rawDialer
 	if tlsConfig != nil {
-		dialer = tls.NewDialer(dialer, tlsConfig)
+		actualDialer = tls.NewDialer(rawDialer, tlsConfig)
 	}
 	fallback := new(atomic.Bool)
 	if destination.Scheme == "http" {
@@ -138,12 +141,14 @@ func NewHTTPSRaw(
 	transport := &HTTPSTransport{
 		TransportAdapter: adapter,
 		logger:           logger,
-		dialer:           dialer,
+		rawDialer:        rawDialer,
+		serverAddr:       serverAddr,
+		tlsConfig:        tlsConfig,
+		dialer:           actualDialer,
 		destination:      destination,
 		headers:          headers,
-		serverAddr:       serverAddr,
 		fallback:         fallback,
-		transport:        NewHTTPSTransportWrapper(dialer, serverAddr, fallback),
+		transport:        NewHTTPSTransportWrapper(actualDialer, serverAddr, fallback),
 	}
 	transport.keepIdle.Store(true)
 	return transport
@@ -185,6 +190,17 @@ func (t *HTTPSTransport) resetTransportLocked() {
 	t.transport = NewHTTPSTransportWrapper(t.dialer, t.serverAddr, t.fallback)
 	t.transportResetAt = time.Now()
 	oldTransport.Close()
+}
+
+// RawDialer returns the original dialer.
+func (t *HTTPSTransport) RawDialer() N.Dialer {
+	return t.rawDialer
+}
+
+// WithDialer returns a clone of this transport using the given dialer.
+// Used by GroupTransport to apply group-level detour override.
+func (t *HTTPSTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
+	return NewHTTPSRaw(t.TransportAdapter, t.logger, d, t.destination, t.headers, t.serverAddr, t.tlsConfig)
 }
 
 func (t *HTTPSTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {

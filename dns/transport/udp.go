@@ -102,6 +102,17 @@ func (t *UDPTransport) CloseIdleConnections() {
 	t.multiplexer.CloseIdleConnections()
 }
 
+// RawDialer returns the original dialer.
+func (t *UDPTransport) RawDialer() N.Dialer {
+	return t.dialer
+}
+
+// WithDialer returns a clone of this transport using the given dialer.
+// Used by GroupTransport to apply group-level detour override.
+func (t *UDPTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
+	return NewUDPRaw(t.logger, t.TransportAdapter, d, t.serverAddr)
+}
+
 func (t *UDPTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
 	t.updateUDPSize(message)
 	response, err := t.multiplexer.Exchange(ctx, message)

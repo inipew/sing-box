@@ -31,9 +31,12 @@ func RegisterTLS(registry *dns.TransportRegistry) {
 
 type TLSTransport struct {
 	dns.TransportAdapter
-	logger      logger.ContextLogger
+	logger logger.ContextLogger
+
+	rawDialer   N.Dialer // dialer before TLS wrapping; used for WithDialer cloning
 	dialer      tls.Dialer
 	serverAddr  M.Socksaddr
+	tlsConfig   tls.Config
 	multiplexer *queryMultiplexer
 }
 
@@ -58,12 +61,14 @@ func NewTLS(ctx context.Context, logger log.ContextLogger, tag string, options o
 	return NewTLSRaw(logger, dns.NewTransportAdapterWithRemoteOptions(C.DNSTypeTLS, tag, options.RemoteDNSServerOptions), transportDialer, serverAddr, tlsConfig), nil
 }
 
-func NewTLSRaw(logger logger.ContextLogger, adapter dns.TransportAdapter, dialer N.Dialer, serverAddr M.Socksaddr, tlsConfig tls.Config) *TLSTransport {
+func NewTLSRaw(logger logger.ContextLogger, adapter dns.TransportAdapter, rawDialer N.Dialer, serverAddr M.Socksaddr, tlsConfig tls.Config) *TLSTransport {
 	t := &TLSTransport{
 		TransportAdapter: adapter,
 		logger:           logger,
-		dialer:           tls.NewDialer(dialer, tlsConfig),
+		rawDialer:        rawDialer,
+		dialer:           tls.NewDialer(rawDialer, tlsConfig),
 		serverAddr:       serverAddr,
+		tlsConfig:        tlsConfig,
 	}
 	t.multiplexer = newQueryMultiplexer(queryMultiplexerOptions{
 		dial: func(ctx context.Context) (net.Conn, error) {
@@ -106,6 +111,17 @@ func (t *TLSTransport) SetKeepIdleConnections(keep bool) {
 
 func (t *TLSTransport) CloseIdleConnections() {
 	t.multiplexer.CloseIdleConnections()
+}
+
+// RawDialer returns the original dialer.
+func (t *TLSTransport) RawDialer() N.Dialer {
+	return t.rawDialer
+}
+
+// WithDialer returns a clone of this transport using the given dialer.
+// Used by GroupTransport to apply group-level detour override.
+func (t *TLSTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
+	return NewTLSRaw(t.logger, t.TransportAdapter, d, t.serverAddr, t.tlsConfig)
 }
 
 func (t *TLSTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
