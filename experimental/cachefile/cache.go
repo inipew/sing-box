@@ -20,18 +20,22 @@ import (
 )
 
 var (
-	bucketSelected = []byte("selected")
-	bucketExpand   = []byte("group_expand")
-	bucketMode     = []byte("clash_mode")
-	bucketRuleSet  = []byte("rule_set")
+	bucketSelected   = []byte("selected")
+	bucketExpand     = []byte("group_expand")
+	bucketMode       = []byte("clash_mode")
+	bucketRuleSet    = []byte("rule_set")
+	bucketExternalUI = []byte("external_ui")
+	bucketWarp       = []byte("warp")
 
 	bucketNameList = []string{
 		string(bucketSelected),
 		string(bucketExpand),
 		string(bucketMode),
 		string(bucketRuleSet),
+		string(bucketExternalUI),
 		string(bucketRDRC),
 		string(bucketDNSCache),
+		string(bucketWarp),
 	}
 
 	cacheIDDefault = []byte("default")
@@ -178,6 +182,11 @@ func (c *CacheFile) startCacheCleanup() {
 }
 
 func (c *CacheFile) start() error {
+	c.dbAccess.Lock()
+	defer c.dbAccess.Unlock()
+	if c.DB != nil {
+		return nil
+	}
 	const fileMode = 0o666
 	cacheFile, err := filemanager.OpenFile(c.ctx, c.path, os.O_RDWR|os.O_CREATE, fileMode)
 	if err != nil {
@@ -483,5 +492,64 @@ func (c *CacheFile) SaveRuleSet(tag string, set *adapter.SavedBinary) error {
 			return err
 		}
 		return bucket.Put([]byte(tag), setBinary)
+	})
+}
+
+func (c *CacheFile) LoadExternalUI(tag string) *adapter.SavedBinary {
+	var savedSet adapter.SavedBinary
+	err := c.DB.View(func(t *bbolt.Tx) error {
+		bucket := c.bucket(t, bucketExternalUI)
+		if bucket == nil {
+			return os.ErrNotExist
+		}
+		setBinary := bucket.Get([]byte(tag))
+		if len(setBinary) == 0 {
+			return os.ErrInvalid
+		}
+		return savedSet.UnmarshalBinary(setBinary)
+	})
+	if err != nil {
+		return nil
+	}
+	return &savedSet
+}
+
+func (c *CacheFile) SaveExternalUI(tag string, info *adapter.SavedBinary) error {
+	return c.DB.Batch(func(t *bbolt.Tx) error {
+		bucket, err := c.createBucket(t, bucketExternalUI)
+		if err != nil {
+			return err
+		}
+		setBinary, err := info.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(tag), setBinary)
+	})
+}
+
+func (c *CacheFile) LoadWarp(tag string) string {
+	var credentials string
+	c.view(func(t *bbolt.Tx) error {
+		bucket := c.bucket(t, bucketWarp)
+		if bucket == nil {
+			return nil
+		}
+		credBytes := bucket.Get([]byte(tag))
+		if len(credBytes) > 0 {
+			credentials = string(credBytes)
+		}
+		return nil
+	})
+	return credentials
+}
+
+func (c *CacheFile) SaveWarp(tag string, credentials string) error {
+	return c.batch(func(t *bbolt.Tx) error {
+		bucket, err := c.createBucket(t, bucketWarp)
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(tag), []byte(credentials))
 	})
 }
