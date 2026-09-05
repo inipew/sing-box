@@ -46,6 +46,7 @@ type URLTest struct {
 	interval                     time.Duration
 	tolerance                    uint16
 	idleTimeout                  time.Duration
+	timeout                      time.Duration
 	group                        *URLTestGroup
 	checkAccess                  sync.Mutex
 	interruptExternalConnections bool
@@ -63,6 +64,7 @@ func NewURLTest(ctx context.Context, router adapter.Router, logger log.ContextLo
 		interval:                     time.Duration(options.Interval),
 		tolerance:                    options.Tolerance,
 		idleTimeout:                  time.Duration(options.IdleTimeout),
+		timeout:                      time.Duration(options.Timeout),
 		interruptExternalConnections: options.InterruptExistConnections,
 	}
 	if len(outbound.tags) == 0 {
@@ -80,7 +82,7 @@ func (s *URLTest) Start() error {
 		}
 		outbounds = append(outbounds, detour)
 	}
-	group, err := NewURLTestGroup(s.ctx, s.outbound, s.logger, outbounds, s.link, s.interval, s.tolerance, s.idleTimeout, s.interruptExternalConnections)
+	group, err := NewURLTestGroup(s.ctx, s.outbound, s.logger, outbounds, s.link, s.interval, s.tolerance, s.idleTimeout, s.timeout, s.interruptExternalConnections)
 	if err != nil {
 		return err
 	}
@@ -222,6 +224,7 @@ type URLTestGroup struct {
 	interval                     time.Duration
 	tolerance                    uint16
 	idleTimeout                  time.Duration
+	timeout                      time.Duration
 	history                      *urltest.HistoryStorage
 	checking                     atomic.Bool
 	selectedOutboundTCP          adapter.Outbound
@@ -236,7 +239,7 @@ type URLTestGroup struct {
 	lastActive                   common.TypedValue[time.Time]
 }
 
-func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManager, logger log.Logger, outbounds []adapter.Outbound, link string, interval time.Duration, tolerance uint16, idleTimeout time.Duration, interruptExternalConnections bool) (*URLTestGroup, error) {
+func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManager, logger log.Logger, outbounds []adapter.Outbound, link string, interval time.Duration, tolerance uint16, idleTimeout time.Duration, timeout time.Duration, interruptExternalConnections bool) (*URLTestGroup, error) {
 	if interval == 0 {
 		interval = C.DefaultURLTestInterval
 	}
@@ -262,6 +265,7 @@ func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManage
 		interval:                     interval,
 		tolerance:                    tolerance,
 		idleTimeout:                  idleTimeout,
+		timeout:                      timeout,
 		history:                      history,
 		close:                        make(chan struct{}),
 		pause:                        service.FromContext[pause.Manager](ctx),
