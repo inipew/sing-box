@@ -84,6 +84,7 @@ type InboundContext struct {
 	TLSRecordFragment         bool
 	TLSSpoof                  string
 	TLSSpoofMethod            tlsspoof.Method
+	RateLimit                 *option.RateLimitActionOptions
 
 	NetworkStrategy     *C.NetworkStrategy
 	NetworkType         []C.InterfaceType
