@@ -222,3 +222,51 @@ type MDNSDNSServerOptions struct {
 	LocalDNSServerOptions
 	Interface badoption.Listable[string] `json:"interface,omitempty"`
 }
+
+// GroupDNSServerOptions configures a virtual DNS transport that dispatches
+// queries across a pool of member transports using a pluggable strategy,
+// inspired by dnscrypt-proxy's lb_strategy system.
+type GroupDNSServerOptions struct {
+	// Servers lists the tags of member DNS transports.
+	Servers []string `json:"servers"`
+
+	// Detour forces all member transports in this group to route their
+	// network connections through the specified outbound tag.
+	// Member transports do NOT need to declare their own detour.
+	// This allows the same bare server definitions to be reused in multiple
+	// groups that route through different proxies.
+	Detour string `json:"detour,omitempty"`
+
+	// Strategy controls which server(s) are selected for each query.
+	// Values: "first", "random", "round_robin", "weighted", "epsilon_greedy", "wp2" (default).
+	Strategy string `json:"strategy,omitempty"`
+
+	// Mode controls how queries are dispatched to selected servers.
+	// Values: "sequential" (default), "concurrent", "fallback".
+	Mode string `json:"mode,omitempty"`
+
+	// FallbackDelay is the delay before promoting fallback servers in "fallback" mode.
+	// Default: 300ms (happy-eyeballs style).
+	FallbackDelay badoption.Duration `json:"fallback_delay,omitempty"`
+
+	// MaxRetries is the maximum number of servers to try or race across all modes.
+	// In "sequential", it's the maximum number of servers to try.
+	// In "concurrent", it's the maximum number of servers to race simultaneously.
+	// In "fallback", it's the maximum number of servers to try (1 primary + fallbacks).
+	// 0 means try all servers.
+	MaxRetries int `json:"max_retries,omitempty"`
+
+	// HealthCheck configures active latency probing.
+	// When omitted, only passive RTT measurement from real queries is used.
+	HealthCheck *DNSGroupHealthCheckOptions `json:"health_check,omitempty"`
+}
+
+// DNSGroupHealthCheckOptions configures active latency probing for group members.
+type DNSGroupHealthCheckOptions struct {
+	// Interval between health-check probes. Default: 10m.
+	Interval badoption.Duration `json:"interval,omitempty"`
+	// Timeout for each probe. Default: 5s.
+	Timeout badoption.Duration `json:"timeout,omitempty"`
+	// SampleSize is the number of recent RTT samples used for EWMA. Default: 10.
+	SampleSize int `json:"sample_size,omitempty"`
+}
