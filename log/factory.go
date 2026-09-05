@@ -15,6 +15,7 @@ type Factory interface {
 	Close() error
 	Level() Level
 	SetLevel(level Level)
+	SetFilter(filter Filter)
 	Logger() ContextLogger
 	NewLogger(tag string) ContextLogger
 	AttachPlatformWriter(writer PlatformWriter)
