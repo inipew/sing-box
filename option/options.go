@@ -67,11 +67,13 @@ func (o *Options) SetComments(comments *json.CommentSet) {
 }
 
 type LogOptions struct {
-	Disabled     bool   `json:"disabled,omitempty"`
-	Level        string `json:"level,omitempty" enum:"trace,debug,info,warn,warning,error,fatal,panic"`
-	Output       string `json:"output,omitempty"`
-	Timestamp    bool   `json:"timestamp,omitempty"`
-	DisableColor bool   `json:"-"`
+	Disabled     bool     `json:"disabled,omitempty"`
+	Level        string   `json:"level,omitempty" enum:"trace,debug,info,warn,warning,error,fatal,panic"`
+	Output       string   `json:"output,omitempty"`
+	Timestamp    bool     `json:"timestamp,omitempty"`
+	DisableColor bool     `json:"-"`
+	MuteNoise    *bool    `json:"mute_noise,omitempty"`
+	MutePatterns []string `json:"mute_patterns,omitempty"`
 }
 
 type StubOptions struct{}
