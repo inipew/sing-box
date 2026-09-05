@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sagernet/bbolt"
+	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/logger"
 )
 
@@ -92,6 +93,34 @@ func (c *CacheFile) ClearDNSCache() error {
 		}
 		return bucket.DeleteBucket(bucketDNSCache)
 	})
+}
+
+func (c *CacheFile) DeleteDNSCache(transportName string, qName string, qType uint16) {
+	key := saveCacheKey{transportName, qName, qType}
+	c.pendingAccess.Lock()
+	if entry, loaded := c.pending.dnsCache[key]; loaded {
+		delete(c.pending.dnsCache, key)
+		c.pending.count--
+		c.pending.size -= len(key.QuestionName) + len(entry.value)
+	}
+	c.pendingAccess.Unlock()
+	go func() {
+		bKey := buf.Get(2 + len(qName))
+		binary.BigEndian.PutUint16(bKey, qType)
+		copy(bKey[2:], qName)
+		defer buf.Put(bKey)
+		_ = c.batch(func(tx *bbolt.Tx) error {
+			bucket := c.bucket(tx, bucketDNSCache)
+			if bucket == nil {
+				return nil
+			}
+			bucket = bucket.Bucket([]byte(transportName))
+			if bucket == nil {
+				return nil
+			}
+			return bucket.Delete(bKey)
+		})
+	}()
 }
 
 func (c *CacheFile) loopCacheCleanup(interval time.Duration, cleanupFunc func()) {
