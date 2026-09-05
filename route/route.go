@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/common/ratelimit"
 	"github.com/sagernet/sing-box/common/sniff"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
@@ -170,6 +171,11 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 	for _, tracker := range r.trackers {
 		conn = tracker.RoutedConnection(ctx, conn, metadata, selectedRule, selectedOutbound)
 	}
+	if metadata.RateLimit != nil && r.rateLimitManager != nil {
+		if limiter := r.resolveLimiter(metadata.RateLimit); limiter != nil {
+			conn = ratelimit.NewLimitedConn(ctx, conn, limiter)
+		}
+	}
 	if outboundHandler, isHandler := selectedOutbound.(adapter.ConnectionHandler); isHandler {
 		outboundHandler.NewConnection(ctx, conn, metadata, onClose)
 	} else {
@@ -306,6 +312,11 @@ func (r *Router) routePacketConnection(ctx context.Context, conn N.PacketConn, m
 		conn = newFakeIPNATPacketConn(bufio.NewNetPacketConn(conn), metadata.OriginDestination, metadata.Destination)
 	} else if metadata.DestOverride {
 		conn = bufio.NewNATPacketConn(bufio.NewNetPacketConn(conn), metadata.OriginDestination, metadata.Destination)
+	}
+	if metadata.RateLimit != nil && r.rateLimitManager != nil {
+		if limiter := r.resolvePacketLimiter(metadata.RateLimit); limiter != nil {
+			conn = ratelimit.NewLimitedPacketConn(ctx, conn, limiter)
+		}
 	}
 	onClose = r.wrapQUICSniffIdleCache(metadata, onClose)
 	if outboundHandler, isHandler := selectedOutbound.(adapter.PacketConnectionHandler); isHandler {
@@ -467,6 +478,9 @@ func applyRouteOptionsOverride(metadata *adapter.InboundContext, routeOptions *R
 	}
 	if routeOptions.UDPTimeout > 0 {
 		metadata.UDPTimeout = routeOptions.UDPTimeout
+	}
+	if routeOptions.RateLimit != nil {
+		metadata.RateLimit = routeOptions.RateLimit
 	}
 }
 
