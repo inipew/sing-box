@@ -14,5 +14,26 @@ type URLTestOutboundOptions struct {
 	Interval                  badoption.Duration `json:"interval,omitempty"`
 	Tolerance                 uint16             `json:"tolerance,omitempty"`
 	IdleTimeout               badoption.Duration `json:"idle_timeout,omitempty"`
+	Timeout                   badoption.Duration `json:"timeout,omitempty"`
+	InterruptExistConnections bool               `json:"interrupt_exist_connections,omitempty"`
+}
+
+type FallbackOutboundOptions struct {
+	Outbounds                 []string           `json:"outbounds"`
+	URL                       string             `json:"url,omitempty"`
+	Interval                  badoption.Duration `json:"interval,omitempty"`
+	IdleTimeout               badoption.Duration `json:"idle_timeout,omitempty"`
+	Timeout                   badoption.Duration `json:"timeout,omitempty"`
+	FallbackDelay             badoption.Duration `json:"fallback_delay,omitempty"`
+	InterruptExistConnections bool               `json:"interrupt_exist_connections,omitempty"`
+}
+
+type LoadBalanceOutboundOptions struct {
+	Outbounds                 []string           `json:"outbounds"`
+	Strategy                  string             `json:"strategy,omitempty"`
+	URL                       string             `json:"url,omitempty"`
+	Interval                  badoption.Duration `json:"interval,omitempty"`
+	IdleTimeout               badoption.Duration `json:"idle_timeout,omitempty"`
+	Timeout                   badoption.Duration `json:"timeout,omitempty"`
 	InterruptExistConnections bool               `json:"interrupt_exist_connections,omitempty"`
 }

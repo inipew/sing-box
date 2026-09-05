@@ -14,6 +14,7 @@
   "interval": "",
   "tolerance": 0,
   "idle_timeout": "",
+  "timeout": "",
   "interrupt_exist_connections": false
 }
 ```
@@ -41,6 +42,10 @@ The test tolerance in milliseconds. `50` will be used if empty.
 #### idle_timeout
 
 The idle timeout. `30m` will be used if empty.
+
+#### timeout
+
+The test timeout. `15s` will be used if empty.
 
 #### interrupt_exist_connections
 
