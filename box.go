@@ -59,6 +59,7 @@ type Box struct {
 	internalService     []adapter.LifecycleService
 	ntpService          *ntp.Service
 	scope               *adapter.Scope
+	reloadChan          chan struct{}
 }
 
 type Options struct {
@@ -109,6 +110,7 @@ func Context(
 
 func New(options Options) (*Box, error) {
 	createdAt := time.Now()
+	reloadChan := make(chan struct{}, 1)
 	ctx := options.Context
 	if ctx == nil {
 		ctx = context.Background()
@@ -185,6 +187,11 @@ func New(options Options) (*Box, error) {
 	service.MustRegister[log.Factory](ctx, logFactory)
 
 	var internalServices []adapter.LifecycleService
+	if needCacheFile {
+		cacheFile := cachefile.New(ctx, logFactory.NewLogger("cache-file"), common.PtrValueOrDefault(experimentalOptions.CacheFile))
+		service.MustRegister[adapter.CacheFile](ctx, cacheFile)
+		internalServices = append(internalServices, cacheFile)
+	}
 	routeOptions := common.PtrValueOrDefault(options.Route)
 	certificateOptions := common.PtrValueOrDefault(options.Certificate)
 	if C.IsAndroid || certificateOptions.Store != "" && certificateOptions.Store != C.CertificateStoreSystem ||
@@ -234,7 +241,7 @@ func New(options Options) (*Box, error) {
 	httpClientManager := httpclient.NewManager(ctx, logFactory.NewLogger("httpclient"), options.HTTPClients, routeOptions.DefaultHTTPClient)
 	service.MustRegister[adapter.HTTPClientManager](ctx, httpClientManager)
 	httpClientService := adapter.LifecycleService(httpClientManager)
-	router := route.NewRouter(ctx, logFactory, routeOptions, dnsOptions)
+	router := route.NewRouter(ctx, logFactory, routeOptions, dnsOptions, reloadChan)
 	service.MustRegister[adapter.Router](ctx, router)
 	err = router.Initialize(routeOptions.Rules, routeOptions.RuleSet)
 	if err != nil {
@@ -420,11 +427,7 @@ func New(options Options) (*Box, error) {
 			return nil, E.Cause(err, "initialize platform interface")
 		}
 	}
-	if needCacheFile {
-		cacheFile := cachefile.New(ctx, logFactory.NewLogger("cache-file"), common.PtrValueOrDefault(experimentalOptions.CacheFile))
-		service.MustRegister[adapter.CacheFile](ctx, cacheFile)
-		internalServices = append(internalServices, cacheFile)
-	}
+
 	if needClashAPI {
 		clashServer, err := experimental.NewClashServer(ctx, logFactory.(log.ObservableFactory), common.PtrValueOrDefault(experimentalOptions.ClashAPI))
 		if err != nil {
@@ -485,6 +488,7 @@ func New(options Options) (*Box, error) {
 		internalService:     internalServices,
 		ntpService:          ntpService,
 		scope:               adapter.NewScope(ctx, logFactory.Logger()),
+		reloadChan:          reloadChan,
 	}, nil
 }
 
@@ -571,8 +575,8 @@ func (s *Box) preStart() error {
 		return err
 	}
 	err = s.startComponents(adapter.StartStateStart,
-		boxComponent{"outbound", s.outbound},
 		boxComponent{"dns-transport", s.dnsTransport},
+		boxComponent{"outbound", s.outbound},
 		boxComponent{"network", s.network},
 		boxComponent{"connection", s.connection},
 		boxComponent{s.httpClientService.Name(), s.httpClientService},
@@ -687,4 +691,8 @@ func (s *Box) CloseIdleConnections() {
 
 func (s *Box) LogFactory() log.Factory {
 	return s.logFactory
+}
+
+func (s *Box) ReloadChan() <-chan struct{} {
+	return s.reloadChan
 }
