@@ -1,6 +1,7 @@
 package option
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/netip"
@@ -9,6 +10,7 @@ import (
 
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/schema"
+	"github.com/sagernet/sing/common/byteformats"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/json"
 	"github.com/sagernet/sing/common/json/badjson"
@@ -187,11 +189,63 @@ type RawRouteOptionsActionOptions struct {
 	UDPConnect                bool               `json:"udp_connect,omitempty"`
 	UDPTimeout                badoption.Duration `json:"udp_timeout,omitempty"`
 
-	TLSFragment              bool               `json:"tls_fragment,omitempty"`
-	TLSFragmentFallbackDelay badoption.Duration `json:"tls_fragment_fallback_delay,omitempty"`
-	TLSRecordFragment        bool               `json:"tls_record_fragment,omitempty"`
-	TLSSpoof                 string             `json:"tls_spoof,omitempty"`
-	TLSSpoofMethod           string             `json:"tls_spoof_method,omitempty" enum:"wrong-sequence,wrong-checksum,wrong-ack,wrong-md5,wrong-timestamp"`
+	TLSFragment              bool                    `json:"tls_fragment,omitempty"`
+	TLSFragmentFallbackDelay badoption.Duration      `json:"tls_fragment_fallback_delay,omitempty"`
+	TLSRecordFragment        bool                    `json:"tls_record_fragment,omitempty"`
+	TLSSpoof                 string                  `json:"tls_spoof,omitempty"`
+	TLSSpoofMethod           string                  `json:"tls_spoof_method,omitempty" enum:"wrong-sequence,wrong-checksum,wrong-ack,wrong-md5,wrong-timestamp"`
+	RateLimit                *RateLimitActionOptions `json:"rate_limit,omitempty"`
+}
+
+type _RateLimitActionOptions struct {
+	Tag      string                          `json:"tag,omitempty" reference:"rate_limiter"`
+	Upload   *byteformats.NetworkBytesCompat `json:"upload,omitempty"`
+	Download *byteformats.NetworkBytesCompat `json:"download,omitempty"`
+}
+
+type RateLimitActionOptions _RateLimitActionOptions
+
+func (r RateLimitActionOptions) MarshalJSON() ([]byte, error) {
+	if r.Tag != "" {
+		return json.Marshal(r.Tag)
+	}
+	return json.Marshal(_RateLimitActionOptions(r))
+}
+
+func (r *RateLimitActionOptions) UnmarshalJSON(data []byte) error {
+	return r.UnmarshalJSONContext(context.Background(), data)
+}
+
+func (r *RateLimitActionOptions) UnmarshalJSONContext(ctx context.Context, data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] == '{' {
+		var raw _RateLimitActionOptions
+		err := json.UnmarshalContext(ctx, data, &raw)
+		if err != nil {
+			return err
+		}
+		if raw.Tag != "" && (raw.Upload != nil || raw.Download != nil) {
+			return E.New("rate_limit: cannot specify both 'tag' and inline 'upload'/'download'")
+		}
+		if raw.Tag == "" && (raw.Upload == nil || raw.Upload.Value() == 0) && (raw.Download == nil || raw.Download.Value() == 0) {
+			return E.New("empty rate_limit option")
+		}
+		*r = RateLimitActionOptions(raw)
+		return nil
+	}
+	var tag string
+	err := json.UnmarshalContext(ctx, data, &tag)
+	if err != nil {
+		return err
+	}
+	if tag == "" {
+		return E.New("empty rate_limit tag")
+	}
+	*r = RateLimitActionOptions{Tag: tag}
+	return nil
 }
 
 type RouteOptionsActionOptions RawRouteOptionsActionOptions

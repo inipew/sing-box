@@ -30,6 +30,9 @@ func (f *nopFactory) Level() Level {
 func (f *nopFactory) SetLevel(level Level) {
 }
 
+func (f *nopFactory) SetFilter(filter Filter) {
+}
+
 func (f *nopFactory) Logger() ContextLogger {
 	return f
 }

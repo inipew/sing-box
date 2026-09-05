@@ -9,6 +9,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/expiringmap"
 	"github.com/sagernet/sing-box/common/process"
+	"github.com/sagernet/sing-box/common/ratelimit"
 	"github.com/sagernet/sing-box/common/taskmonitor"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
@@ -43,6 +44,8 @@ type Router struct {
 	ruleSets          []adapter.RuleSet
 	ruleSetMap        map[string]adapter.RuleSet
 	ruleSetUpdater    *R.RuleSetUpdater
+	rateLimitManager  *ratelimit.Manager
+	rateLimiters      []option.RateLimiterOptions
 	processSearcher   process.Searcher
 	processCache      *freelru.Cache[processCacheKey, processCacheEntry]
 	neighborResolver  adapter.NeighborResolver
@@ -56,6 +59,20 @@ type Router struct {
 }
 
 func NewRouter(ctx context.Context, logFactory log.Factory, options option.RouteOptions, dnsOptions option.DNSOptions, reloadChan chan<- struct{}) *Router {
+	sharedConfigs := make(map[string]ratelimit.Config, len(options.RateLimiters))
+	for _, l := range options.RateLimiters {
+		if l.Tag == "" {
+			continue
+		}
+		var cfg ratelimit.Config
+		if l.Upload != nil {
+			cfg.Upload = int64(l.Upload.Value())
+		}
+		if l.Download != nil {
+			cfg.Download = int64(l.Download.Value())
+		}
+		sharedConfigs[l.Tag] = cfg
+	}
 	return &Router{
 		ctx:               ctx,
 		logger:            logFactory.NewLogger("router"),
@@ -71,6 +88,8 @@ func NewRouter(ctx context.Context, logFactory log.Factory, options option.Route
 		needFindProcess:   hasRule(options.Rules, isProcessRule) || hasDNSRule(dnsOptions.Rules, isProcessDNSRule) || options.FindProcess,
 		needFindNeighbor:  hasRule(options.Rules, isNeighborRule) || hasDNSRule(dnsOptions.Rules, isNeighborDNSRule) || hasLocalNeighborDNSServer(dnsOptions.Servers) || options.FindNeighbor,
 		leaseFiles:        options.DHCPLeaseFiles,
+		rateLimitManager:  ratelimit.NewManager(sharedConfigs),
+		rateLimiters:      options.RateLimiters,
 		pauseManager:      service.FromContext[pause.Manager](ctx),
 		platformInterface: service.FromContext[adapter.PlatformInterface](ctx),
 		reloadChan:        reloadChan,
@@ -80,6 +99,19 @@ func NewRouter(ctx context.Context, logFactory log.Factory, options option.Route
 }
 
 func (r *Router) Initialize(rules []option.Rule, ruleSets []option.RuleSet) error {
+	tagSet := make(map[string]bool, len(r.rateLimiters))
+	for i, l := range r.rateLimiters {
+		if l.Tag == "" {
+			return E.New("empty rate limiter tag in rate_limiters[", i, "]")
+		}
+		if tagSet[l.Tag] {
+			return E.New("duplicate rate limiter tag: ", l.Tag)
+		}
+		tagSet[l.Tag] = true
+		if (l.Upload == nil || l.Upload.Value() == 0) && (l.Download == nil || l.Download.Value() == 0) {
+			return E.New("rate limiter [", l.Tag, "] has neither upload nor download limit")
+		}
+	}
 	for i, options := range rules {
 		err := R.ValidateNoNestedRuleActions(options)
 		if err != nil {
@@ -90,6 +122,22 @@ func (r *Router) Initialize(rules []option.Rule, ruleSets []option.RuleSet) erro
 			return E.Cause(err, "parse rule[", i, "]")
 		}
 		r.rules = append(r.rules, rule)
+	}
+	for i, rule := range r.rules {
+		var rateLimitOpt *option.RateLimitActionOptions
+		switch action := rule.Action().(type) {
+		case *R.RuleActionRoute:
+			rateLimitOpt = action.RateLimit
+		case *R.RuleActionRouteOptions:
+			rateLimitOpt = action.RateLimit
+		case *R.RuleActionBypass:
+			rateLimitOpt = action.RateLimit
+		}
+		if rateLimitOpt != nil && rateLimitOpt.Tag != "" {
+			if _, exists := r.rateLimitManager.Get(rateLimitOpt.Tag); !exists {
+				return E.New("rate limiter not found in rule[", i, "]: ", rateLimitOpt.Tag)
+			}
+		}
 	}
 	for i, options := range ruleSets {
 		for _, tag := range options.Tag {
@@ -339,3 +387,44 @@ func (r *Router) refreshQUICSniff(source, destination M.Socksaddr, sniffHost str
 	})
 }
 
+func (r *Router) resolveLimiter(opt *option.RateLimitActionOptions) *ratelimit.Limiter {
+	if opt == nil || r.rateLimitManager == nil {
+		return nil
+	}
+	if opt.Tag != "" {
+		limiter, _ := r.rateLimitManager.Get(opt.Tag)
+		return limiter
+	}
+	var cfg ratelimit.Config
+	if opt.Upload != nil {
+		cfg.Upload = int64(opt.Upload.Value())
+	}
+	if opt.Download != nil {
+		cfg.Download = int64(opt.Download.Value())
+	}
+	if cfg.Upload <= 0 && cfg.Download <= 0 {
+		return nil
+	}
+	return r.rateLimitManager.NewForConnection(cfg)
+}
+
+func (r *Router) resolvePacketLimiter(opt *option.RateLimitActionOptions) *ratelimit.Limiter {
+	if opt == nil || r.rateLimitManager == nil {
+		return nil
+	}
+	if opt.Tag != "" {
+		limiter, _ := r.rateLimitManager.Get(opt.Tag)
+		return limiter
+	}
+	var cfg ratelimit.Config
+	if opt.Upload != nil {
+		cfg.Upload = int64(opt.Upload.Value())
+	}
+	if opt.Download != nil {
+		cfg.Download = int64(opt.Download.Value())
+	}
+	if cfg.Upload <= 0 && cfg.Download <= 0 {
+		return nil
+	}
+	return r.rateLimitManager.NewForPacketConnection(cfg)
+}

@@ -42,6 +42,7 @@ func newRuleActionRouteOptions(options option.RawRouteOptionsActionOptions) (Rul
 		TLSRecordFragment:         options.TLSRecordFragment,
 		TLSSpoof:                  spoof,
 		TLSSpoofMethod:            spoofMethod,
+		RateLimit:                 options.RateLimit,
 	}, nil
 }
 
@@ -237,6 +238,7 @@ type RuleActionRouteOptions struct {
 	TLSRecordFragment         bool
 	TLSSpoof                  string
 	TLSSpoofMethod            tlsspoof.Method
+	RateLimit                 *option.RateLimitActionOptions
 }
 
 func (r *RuleActionRouteOptions) Type() string {
@@ -288,6 +290,20 @@ func (r *RuleActionRouteOptions) Descriptions() []string {
 	if r.TLSSpoof != "" {
 		descriptions = append(descriptions, F.ToString("tls-spoof=", r.TLSSpoof))
 		descriptions = append(descriptions, F.ToString("tls-spoof-method=", r.TLSSpoofMethod.String()))
+	}
+	if r.RateLimit != nil {
+		if r.RateLimit.Tag != "" {
+			descriptions = append(descriptions, F.ToString("rate-limit=", r.RateLimit.Tag))
+		} else {
+			var limitDescs []string
+			if r.RateLimit.Upload != nil {
+				limitDescs = append(limitDescs, F.ToString("up:", r.RateLimit.Upload))
+			}
+			if r.RateLimit.Download != nil {
+				limitDescs = append(limitDescs, F.ToString("down:", r.RateLimit.Download))
+			}
+			descriptions = append(descriptions, F.ToString("rate-limit=", strings.Join(limitDescs, ",")))
+		}
 	}
 	return descriptions
 }

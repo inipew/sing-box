@@ -1,12 +1,16 @@
 package option
 
-import "github.com/sagernet/sing/common/json/badoption"
+import (
+	"github.com/sagernet/sing/common/byteformats"
+	"github.com/sagernet/sing/common/json/badoption"
+)
 
 type RouteOptions struct {
 	GeoIP                      *GeoIPOptions                     `json:"geoip,omitempty" schema:"omit"`
 	Geosite                    *GeositeOptions                   `json:"geosite,omitempty" schema:"omit"`
 	Rules                      []Rule                            `json:"rules,omitempty"`
 	RuleSet                    []RuleSet                         `json:"rule_set,omitempty"`
+	RateLimiters               []RateLimiterOptions              `json:"rate_limiters,omitempty"`
 	Final                      string                            `json:"final,omitempty" reference:"outbound"`
 	FindProcess                bool                              `json:"find_process,omitempty"`
 	FindNeighbor               bool                              `json:"find_neighbor,omitempty"`
@@ -21,6 +25,12 @@ type RouteOptions struct {
 	DefaultFallbackNetworkType badoption.Listable[InterfaceType] `json:"default_fallback_network_type,omitempty"`
 	DefaultFallbackDelay       badoption.Duration                `json:"default_fallback_delay,omitempty"`
 	DefaultHTTPClient          string                            `json:"default_http_client,omitempty"`
+}
+
+type RateLimiterOptions struct {
+	Tag      string                          `json:"tag"`
+	Upload   *byteformats.NetworkBytesCompat `json:"upload,omitempty"`
+	Download *byteformats.NetworkBytesCompat `json:"download,omitempty"`
 }
 
 type GeoIPOptions struct {
