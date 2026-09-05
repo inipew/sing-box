@@ -725,10 +725,12 @@ func (s *StartedService) URLTest(ctx context.Context, request *URLTestRequest) (
 		return nil, status.Error(codes.NotFound, "outbound not found: "+outboundTag)
 	}
 	historyStorage := boxService.urlTestHistoryStorage
-	urlTest, isURLTest := outbound.(*group.URLTest)
+	type checkableGroup interface {
+		CheckOutbounds()
+	}
 	outboundGroup, isOutboundGroup := outbound.(adapter.OutboundGroup)
-	if isURLTest {
-		go urlTest.CheckOutbounds()
+	if checkable, ok := outbound.(checkableGroup); ok {
+		go checkable.CheckOutbounds()
 	} else if isOutboundGroup {
 		outbounds := common.FilterNotNil(common.Map(outboundGroup.All(), func(it string) adapter.Outbound {
 			itOutbound, _ := boxService.outboundManager.Outbound(it)
