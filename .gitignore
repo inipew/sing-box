@@ -3,10 +3,12 @@
 /*.json
 /*.srs
 /*.db
+/*.zip
 /site/
 /bin/
 /dist/
 /sing-box
+/sing-box-*
 /sing-box.exe
 /build/
 /*.jar
@@ -21,3 +23,11 @@
 CLAUDE.md
 AGENTS.md
 /.claude/
+.env
+*.env
+session.json
+.github/telegram/*.json
+.telegram-session
+.github/telegram/.telegram-session
+.github/telegram/sendtotelegram
+
