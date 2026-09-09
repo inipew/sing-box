@@ -25,15 +25,25 @@ const (
 )
 
 func (s *Server) checkAndDownloadExternalUI(update bool) error {
+	s.externalUIAccess.Lock()
+	defer s.externalUIAccess.Unlock()
 	if s.externalUI == "" {
 		return nil
 	}
 	entries, err := filemanager.ReadDir(s.ctx, s.externalUI)
 	if err != nil {
-		filemanager.MkdirAll(s.ctx, s.externalUI, 0o755)
+		if !os.IsNotExist(err) {
+			return E.Cause(err, "read external UI directory")
+		}
+		if err = filemanager.MkdirAll(s.ctx, s.externalUI, 0o755); err != nil {
+			return E.Cause(err, "create external UI directory")
+		}
 	}
 	if len(entries) != 0 && s.lastUpdated.IsZero() {
-		info, _ := os.Stat(s.externalUI)
+		info, err := os.Stat(s.externalUI)
+		if err != nil {
+			return E.Cause(err, "stat external UI directory")
+		}
 		s.lastUpdated = info.ModTime()
 	}
 	if len(entries) == 0 || update {
@@ -74,11 +84,14 @@ func (s *Server) downloadExternalUI() error {
 	if err != nil {
 		return err
 	}
+	defer response.Body.Close()
 	switch response.StatusCode {
 	case http.StatusOK:
 	case http.StatusNotModified:
 		s.lastUpdated = time.Now()
-		os.Chtimes(s.externalUI, s.lastUpdated, s.lastUpdated)
+		if err = os.Chtimes(s.externalUI, s.lastUpdated, s.lastUpdated); err != nil {
+			s.logger.Warn("update external UI timestamp: ", err)
+		}
 		if s.cacheFile != nil {
 			if savedExternalUI := s.cacheFile.LoadExternalUI("ExternalUI"); savedExternalUI != nil {
 				savedExternalUI.LastUpdated = s.lastUpdated
@@ -94,11 +107,8 @@ func (s *Server) downloadExternalUI() error {
 	default:
 		return E.New("download external UI failed: ", response.Status)
 	}
-	defer response.Body.Close()
-	removeAllInDirectory(s.ctx, s.externalUI)
-	err = s.downloadZIP(response.Body, s.externalUI)
+	err = s.installExternalUI(response.Body)
 	if err != nil {
-		removeAllInDirectory(s.ctx, s.externalUI)
 		return err
 	}
 	eTagHeader := response.Header.Get("Etag")
@@ -116,6 +126,52 @@ func (s *Server) downloadExternalUI() error {
 		}
 	}
 	s.logger.Info("updated external UI")
+	return nil
+}
+
+func (s *Server) installExternalUI(body io.Reader) error {
+	parentDirectory := filepath.Dir(s.externalUI)
+	if err := os.MkdirAll(parentDirectory, 0o755); err != nil {
+		return E.Cause(err, "create external UI parent directory")
+	}
+	stagingDirectory, err := os.MkdirTemp(parentDirectory, ".external-ui-update-")
+	if err != nil {
+		return E.Cause(err, "create external UI staging directory")
+	}
+	defer os.RemoveAll(stagingDirectory)
+	if err = s.downloadZIP(body, stagingDirectory); err != nil {
+		return err
+	}
+
+	backupDirectory, err := os.MkdirTemp(parentDirectory, ".external-ui-backup-")
+	if err != nil {
+		return E.Cause(err, "reserve external UI backup path")
+	}
+	if err = os.Remove(backupDirectory); err != nil {
+		return E.Cause(err, "prepare external UI backup path")
+	}
+	hasPrevious := false
+	if _, statErr := os.Stat(s.externalUI); statErr == nil {
+		if err = os.Rename(s.externalUI, backupDirectory); err != nil {
+			return E.Cause(err, "backup external UI directory")
+		}
+		hasPrevious = true
+	} else if !os.IsNotExist(statErr) {
+		return E.Cause(statErr, "stat external UI directory")
+	}
+	if err = os.Rename(stagingDirectory, s.externalUI); err != nil {
+		if hasPrevious {
+			if rollbackErr := os.Rename(backupDirectory, s.externalUI); rollbackErr != nil {
+				return E.Errors(E.Cause(err, "install external UI directory"), E.Cause(rollbackErr, "restore previous external UI directory"))
+			}
+		}
+		return E.Cause(err, "install external UI directory")
+	}
+	if hasPrevious {
+		if err = os.RemoveAll(backupDirectory); err != nil {
+			s.logger.Warn("remove previous external UI directory: ", err)
+		}
+	}
 	return nil
 }
 
@@ -219,16 +275,6 @@ func downloadZIPEntry(ctx context.Context, zipFile *zip.File, savePath string) e
 	}
 	defer reader.Close()
 	return common.Error(io.Copy(saveFile, reader))
-}
-
-func removeAllInDirectory(ctx context.Context, directory string) {
-	dirEntries, err := filemanager.ReadDir(ctx, directory)
-	if err != nil {
-		return
-	}
-	for _, dirEntry := range dirEntries {
-		filemanager.RemoveAll(ctx, filepath.Join(directory, dirEntry.Name()))
-	}
 }
 
 func zipIsInSingleDirectory(files []*zip.File) bool {

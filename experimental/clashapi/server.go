@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -64,6 +65,7 @@ type Server struct {
 	lastEtag                 string
 	lastUpdated              time.Time
 	ticker                   *time.Ticker
+	externalUIAccess         sync.Mutex
 }
 
 func NewServer(ctx context.Context, logFactory log.ObservableFactory, options option.ClashAPIOptions) (adapter.LifecycleService, error) {
