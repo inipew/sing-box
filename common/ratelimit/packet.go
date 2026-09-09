@@ -62,9 +62,9 @@ func (c *LimitedPacketConn) Upstream() any {
 }
 
 func (c *LimitedPacketConn) ReaderReplaceable() bool {
-	return true
+	return !c.limiter.HasUpload()
 }
 
 func (c *LimitedPacketConn) WriterReplaceable() bool {
-	return true
+	return !c.limiter.HasDownload()
 }
