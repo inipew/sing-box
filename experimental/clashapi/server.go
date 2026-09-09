@@ -149,7 +149,7 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		r.Mount("/dns", dnsRouter(s.dnsRouter))
 
 		if service.FromContext[adapter.PlatformInterface](ctx) == nil {
-			r.Mount("/restart", restartRouter(ctx, logFactory))
+			r.Mount("/restart", restartRouter(s))
 		}
 
 		s.setupMetaAPI(r)
