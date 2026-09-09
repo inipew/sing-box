@@ -47,14 +47,15 @@ type GroupTransport struct {
 	customDialer  N.Dialer
 	hcOptions     *option.DNSGroupHealthCheckOptions
 
-	access        sync.RWMutex
-	members       []adapter.DNSTransport // resolved at Start
-	clonedMembers []adapter.DNSTransport // clones created by detour override, must be closed by group
-	strategy      Strategy
-	dispatcher    Dispatcher
-	rtt           RTTEstimator
-	hc            *HealthChecker
-	started       bool
+	lifecycleAccess sync.Mutex
+	access          sync.RWMutex
+	members         []adapter.DNSTransport // resolved at Start
+	clonedMembers   []adapter.DNSTransport // clones created by detour override, must be closed by group
+	strategy        Strategy
+	dispatcher      Dispatcher
+	rtt             RTTEstimator
+	hc              *HealthChecker
+	started         bool
 }
 
 // RegisterTransport registers the group transport type with the DNS transport registry.
@@ -130,7 +131,7 @@ func (t *GroupTransport) References() []string {
 
 func (t *GroupTransport) Reset() {
 	t.access.RLock()
-	members := t.members
+	members := append([]adapter.DNSTransport(nil), t.members...)
 	t.access.RUnlock()
 	for _, m := range members {
 		m.Reset()
@@ -139,7 +140,7 @@ func (t *GroupTransport) Reset() {
 
 func (t *GroupTransport) SetKeepIdleConnections(keep bool) {
 	t.access.RLock()
-	members := t.members
+	members := append([]adapter.DNSTransport(nil), t.members...)
 	t.access.RUnlock()
 	for _, m := range members {
 		if keeper, ok := m.(adapter.IdleConnectionKeeper); ok {
@@ -150,7 +151,7 @@ func (t *GroupTransport) SetKeepIdleConnections(keep bool) {
 
 func (t *GroupTransport) CloseIdleConnections() {
 	t.access.RLock()
-	members := t.members
+	members := append([]adapter.DNSTransport(nil), t.members...)
 	t.access.RUnlock()
 	for _, m := range members {
 		if keeper, ok := m.(adapter.IdleConnectionKeeper); ok {
@@ -161,6 +162,14 @@ func (t *GroupTransport) CloseIdleConnections() {
 
 func (t *GroupTransport) Start(stage adapter.StartStage) error {
 	if stage != adapter.StartStateStart {
+		return nil
+	}
+	t.lifecycleAccess.Lock()
+	defer t.lifecycleAccess.Unlock()
+	t.access.RLock()
+	started := t.started
+	t.access.RUnlock()
+	if started {
 		return nil
 	}
 
@@ -218,17 +227,20 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 		clonedMembers = cloned
 	}
 
+	var hc *HealthChecker
+	if t.hcOptions != nil {
+		hc = NewHealthChecker(t.ctx, members, t.hcOptions, t.rtt, t.logger)
+	}
 	t.access.Lock()
 	t.members = members
 	t.clonedMembers = clonedMembers
 	t.strategy = strategy
 	t.dispatcher = dispatcher
+	t.hc = hc
 	t.started = true
 	t.access.Unlock()
 
-	if t.hcOptions != nil {
-		hc := NewHealthChecker(t.ctx, members, t.hcOptions, t.rtt, t.logger)
-		t.hc = hc
+	if hc != nil {
 		hc.Start()
 	}
 
@@ -278,6 +290,8 @@ func (t *GroupTransport) wrapMembersWithDialer(members []adapter.DNSTransport, o
 }
 
 func (t *GroupTransport) Close() error {
+	t.lifecycleAccess.Lock()
+	defer t.lifecycleAccess.Unlock()
 	t.access.Lock()
 	t.started = false
 	hc := t.hc
@@ -289,10 +303,13 @@ func (t *GroupTransport) Close() error {
 	if hc != nil {
 		hc.Close()
 	}
+	var err error
 	for _, m := range clonedMembers {
-		m.Close()
+		err = E.Append(err, m.Close(), func(closeErr error) error {
+			return E.Cause(closeErr, "close cloned DNS transport ", m.Tag())
+		})
 	}
-	return nil
+	return err
 }
 
 func (t *GroupTransport) RawDialer() N.Dialer {
@@ -306,25 +323,28 @@ func (t *GroupTransport) RawDialer() N.Dialer {
 }
 
 func (t *GroupTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
-	clone := *t
-	clone.customDialer = d
-	clone.detour = "" // overriding the string detour
-	clone.access = sync.RWMutex{}
-	clone.members = nil
-	clone.clonedMembers = nil
-	clone.hc = nil
-	clone.started = false
 	sampleSize := 0
-	if clone.hcOptions != nil {
-		sampleSize = clone.hcOptions.SampleSize
+	if t.hcOptions != nil {
+		sampleSize = t.hcOptions.SampleSize
 	}
-	clone.rtt = newRTTEstimator(sampleSize)
-	return &clone
+	return &GroupTransport{
+		ctx:           t.ctx,
+		tag:           t.tag,
+		logger:        t.logger,
+		memberTags:    append([]string(nil), t.memberTags...),
+		strategyName:  t.strategyName,
+		modeStr:       t.modeStr,
+		fallbackDelay: t.fallbackDelay,
+		maxRetries:    t.maxRetries,
+		customDialer:  d,
+		hcOptions:     t.hcOptions,
+		rtt:           newRTTEstimator(sampleSize),
+	}
 }
 
 func (t *GroupTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
 	t.access.RLock()
-	members := t.members
+	members := append([]adapter.DNSTransport(nil), t.members...)
 	strategy := t.strategy
 	dispatcher := t.dispatcher
 	started := t.started

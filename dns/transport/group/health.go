@@ -3,6 +3,7 @@ package group
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -31,6 +32,7 @@ type HealthChecker struct {
 	logger   log.ContextLogger
 	ctx      context.Context
 	cancel   context.CancelFunc
+	waiter   sync.WaitGroup
 }
 
 func NewHealthChecker(
@@ -62,12 +64,17 @@ func NewHealthChecker(
 
 // Start launches the background health-check goroutine.
 func (h *HealthChecker) Start() {
-	go h.loop()
+	h.waiter.Add(1)
+	go func() {
+		defer h.waiter.Done()
+		h.loop()
+	}()
 }
 
 // Close stops the background health-check goroutine.
 func (h *HealthChecker) Close() {
 	h.cancel()
+	h.waiter.Wait()
 }
 
 func (h *HealthChecker) loop() {
@@ -88,9 +95,15 @@ func (h *HealthChecker) loop() {
 }
 
 func (h *HealthChecker) probeAll() {
+	var waiter sync.WaitGroup
 	for _, transport := range h.members {
-		go h.probe(transport)
+		waiter.Add(1)
+		go func() {
+			defer waiter.Done()
+			h.probe(transport)
+		}()
 	}
+	waiter.Wait()
 }
 
 // probe sends a lightweight NS query for "." to the given transport and
