@@ -138,6 +138,24 @@ func (s *Fallback) DialContext(ctx context.Context, network string, destination 
 		s.group.history.DeleteURLTestHistory(RealTag(s.outbound, outbound))
 		return nil, err
 	}
+	if s.fallbackDelay <= 0 {
+		var firstErr error
+		for _, outbound := range candidates {
+			conn, err := outbound.DialContext(ctx, network, destination)
+			if err == nil {
+				return s.group.interruptGroup.NewConn(conn, interrupt.IsExternalConnectionFromContext(ctx)), nil
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			s.logger.ErrorContext(ctx, E.Cause(err, "dial fallback attempt for ", outbound.Tag()))
+			s.group.history.DeleteURLTestHistory(RealTag(s.outbound, outbound))
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		}
+		return nil, firstErr
+	}
 
 	type dialResult struct {
 		conn     net.Conn
@@ -150,9 +168,6 @@ func (s *Fallback) DialContext(ctx context.Context, network string, destination 
 	defer cancelAll()
 
 	var wg sync.WaitGroup
-	var activeCount atomic.Int32
-	activeCount.Store(int32(len(candidates)))
-
 	for i, outbound := range candidates {
 		wg.Add(1)
 		go func(idx int, target adapter.Outbound) {
@@ -329,17 +344,20 @@ func NewFallbackGroup(ctx context.Context, outboundManager adapter.OutboundManag
 func (g *FallbackGroup) PostStart() {
 	g.access.Lock()
 	defer g.access.Unlock()
+	if g.started {
+		return
+	}
 	g.started = true
 	g.lastActive.Store(time.Now())
 	go g.CheckOutbounds(false)
 }
 
 func (g *FallbackGroup) Touch() {
+	g.access.Lock()
+	defer g.access.Unlock()
 	if !g.started {
 		return
 	}
-	g.access.Lock()
-	defer g.access.Unlock()
 	if g.ticker != nil {
 		g.lastActive.Store(time.Now())
 		return
@@ -353,7 +371,12 @@ func (g *FallbackGroup) Touch() {
 func (g *FallbackGroup) Close() error {
 	g.access.Lock()
 	defer g.access.Unlock()
+	if !g.started {
+		return nil
+	}
+	g.started = false
 	if g.ticker == nil {
+		close(g.close)
 		return nil
 	}
 	g.ticker.Stop()
