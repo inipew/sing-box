@@ -186,3 +186,17 @@ func TestLimitedConn_ReadWrite(t *testing.T) {
 	require.Equal(t, 64*1024, n)
 	require.Equal(t, testPayload, readBuf)
 }
+
+func TestLimitedConnReplaceability(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	uploadOnly := NewLimitedConn(context.Background(), clientConn, NewLimiter(Config{Upload: 1024})).(*LimitedConn)
+	require.False(t, uploadOnly.ReaderReplaceable())
+	require.True(t, uploadOnly.WriterReplaceable())
+
+	downloadOnly := NewLimitedConn(context.Background(), clientConn, NewLimiter(Config{Download: 1024})).(*LimitedConn)
+	require.True(t, downloadOnly.ReaderReplaceable())
+	require.False(t, downloadOnly.WriterReplaceable())
+}

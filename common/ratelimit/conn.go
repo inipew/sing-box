@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"io"
 	"net"
 
 	"github.com/sagernet/sing/common/buf"
@@ -84,6 +85,9 @@ func (c *LimitedConn) Write(b []byte) (int, error) {
 		if err != nil {
 			return totalWritten, err
 		}
+		if n == 0 {
+			return totalWritten, io.ErrNoProgress
+		}
 		b = b[n:]
 	}
 	return totalWritten, nil
@@ -106,11 +110,11 @@ func (c *LimitedConn) Upstream() any {
 }
 
 func (c *LimitedConn) ReaderReplaceable() bool {
-	return true
+	return !c.limiter.HasUpload()
 }
 
 func (c *LimitedConn) WriterReplaceable() bool {
-	return true
+	return !c.limiter.HasDownload()
 }
 
 func (c *LimitedConn) ReadCached() *buf.Buffer {
