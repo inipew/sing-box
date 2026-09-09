@@ -290,17 +290,20 @@ func NewLoadBalanceGroup(ctx context.Context, outboundManager adapter.OutboundMa
 func (g *LoadBalanceGroup) PostStart() {
 	g.access.Lock()
 	defer g.access.Unlock()
+	if g.started {
+		return
+	}
 	g.started = true
 	g.lastActive.Store(time.Now())
 	go g.CheckOutbounds(false)
 }
 
 func (g *LoadBalanceGroup) Touch() {
+	g.access.Lock()
+	defer g.access.Unlock()
 	if !g.started {
 		return
 	}
-	g.access.Lock()
-	defer g.access.Unlock()
 	if g.ticker != nil {
 		g.lastActive.Store(time.Now())
 		return
@@ -314,7 +317,12 @@ func (g *LoadBalanceGroup) Touch() {
 func (g *LoadBalanceGroup) Close() error {
 	g.access.Lock()
 	defer g.access.Unlock()
+	if !g.started {
+		return nil
+	}
+	g.started = false
 	if g.ticker == nil {
+		close(g.close)
 		return nil
 	}
 	g.ticker.Stop()
