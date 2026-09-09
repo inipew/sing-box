@@ -19,6 +19,11 @@ import (
 	"github.com/sagernet/sing/service/filemanager"
 )
 
+const (
+	maxExternalUIDownloadSize = 32 * 1024 * 1024
+	maxExternalUIExtractSize  = 128 * 1024 * 1024
+)
+
 func (s *Server) checkAndDownloadExternalUI(update bool) error {
 	if s.externalUI == "" {
 		return nil
@@ -144,10 +149,16 @@ func (s *Server) downloadZIP(body io.Reader, output string) error {
 		return err
 	}
 	defer filemanager.Remove(s.ctx, tempFile.Name())
-	_, err = io.Copy(tempFile, body)
-	tempFile.Close()
+	written, err := io.Copy(tempFile, io.LimitReader(body, maxExternalUIDownloadSize+1))
+	closeErr := tempFile.Close()
 	if err != nil {
 		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if written > maxExternalUIDownloadSize {
+		return E.New("external UI archive exceeds maximum size")
 	}
 	reader, err := zip.OpenReader(tempFile.Name())
 	if err != nil {
@@ -155,23 +166,39 @@ func (s *Server) downloadZIP(body io.Reader, output string) error {
 	}
 	defer reader.Close()
 	trimDir := zipIsInSingleDirectory(reader.File)
+	var extractedSize uint64
 	for _, file := range reader.File {
 		if file.FileInfo().IsDir() {
 			continue
 		}
+		if file.FileInfo().Mode()&os.ModeSymlink != 0 {
+			return E.New("external UI archive contains symlink: ", file.Name)
+		}
+		if file.UncompressedSize64 > maxExternalUIExtractSize-extractedSize {
+			return E.New("external UI archive exceeds maximum extracted size")
+		}
+		extractedSize += file.UncompressedSize64
 		pathElements := strings.Split(file.Name, "/")
 		if trimDir {
 			pathElements = pathElements[1:]
 		}
-		saveDirectory := output
-		if len(pathElements) > 1 {
-			saveDirectory = filepath.Join(saveDirectory, filepath.Join(pathElements[:len(pathElements)-1]...))
+		if len(pathElements) == 0 {
+			return E.New("external UI archive contains empty path")
 		}
+		relativePath := filepath.Clean(filepath.FromSlash(strings.Join(pathElements, "/")))
+		if relativePath == "." || filepath.IsAbs(relativePath) || filepath.VolumeName(relativePath) != "" || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+			return E.New("external UI archive contains unsafe path: ", file.Name)
+		}
+		savePath := filepath.Join(output, relativePath)
+		containedPath, relErr := filepath.Rel(output, savePath)
+		if relErr != nil || containedPath == ".." || strings.HasPrefix(containedPath, ".."+string(filepath.Separator)) {
+			return E.New("external UI archive path escapes output directory: ", file.Name)
+		}
+		saveDirectory := filepath.Dir(savePath)
 		err = filemanager.MkdirAll(s.ctx, saveDirectory, 0o755)
 		if err != nil {
 			return err
 		}
-		savePath := filepath.Join(saveDirectory, pathElements[len(pathElements)-1])
 		err = downloadZIPEntry(s.ctx, file, savePath)
 		if err != nil {
 			return err
