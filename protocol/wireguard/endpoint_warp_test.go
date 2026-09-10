@@ -92,6 +92,19 @@ func TestWARPConfigTranslation(t *testing.T) {
 	require.Len(t, peer.AllowedIPs, 2)
 }
 
+func TestWARPConfigTranslationUsesBootstrapResolver(t *testing.T) {
+	privateKey, err := GeneratePrivateKey()
+	require.NoError(t, err)
+	resolver := &option.DomainResolveOptions{Server: "bootstrap"}
+	cfg := &WARPConfig{
+		PrivateKey:        privateKey,
+		Address:           []netip.Prefix{netip.MustParsePrefix("172.16.0.2/32")},
+		BootstrapResolver: resolver,
+	}
+	options := cfg.WireGuardEndpointOptions()
+	require.Same(t, resolver, options.DomainResolver)
+}
+
 func TestWARPStaticProvider(t *testing.T) {
 	privKey, err := GeneratePrivateKey()
 	require.NoError(t, err)
@@ -110,6 +123,20 @@ func TestWARPStaticProvider(t *testing.T) {
 	require.Equal(t, privKey, cfg.PrivateKey)
 	require.Equal(t, Reserved{1, 2, 3}, cfg.Reserved)
 	require.Len(t, cfg.Address, 1)
+}
+
+func TestWARPStaticConfigurationMustBeComplete(t *testing.T) {
+	_, err := NewWARPEndpoint(context.Background(), nil, log.NewNOPFactory().Logger(), "warp", option.WireGuardWARPEndpointOptions{
+		Address: badoption.Listable[netip.Prefix]{netip.MustParsePrefix("172.16.0.2/32")},
+	})
+	require.ErrorContains(t, err, "private_key")
+
+	privateKey, err := GeneratePrivateKey()
+	require.NoError(t, err)
+	_, err = NewWARPEndpoint(context.Background(), nil, log.NewNOPFactory().Logger(), "warp", option.WireGuardWARPEndpointOptions{
+		PrivateKey: privateKey.String(),
+	})
+	require.ErrorContains(t, err, "address")
 }
 
 type mockProfileProvider struct {
@@ -131,12 +158,12 @@ func TestWARPProvisionFailureClean(t *testing.T) {
 		logger:   log.NewNOPFactory().Logger(),
 		provider: &mockProfileProvider{err: mockErr},
 	}
-	ep.state.Store(warpStateCreated)
-
 	err := ep.Start(adapter.StartStateStart)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "simulated cloudflare api timeout")
-	require.Equal(t, warpStateCreated, ep.state.Load())
+	require.False(t, ep.started)
+	require.False(t, ep.ready)
+	require.False(t, ep.closed)
 
 	// Dial before ready should return error, not panic
 	_, dialErr := ep.DialContext(context.Background(), "tcp", M.ParseSocksaddr("1.1.1.1:80"))
@@ -146,7 +173,6 @@ func TestWARPProvisionFailureClean(t *testing.T) {
 
 func TestWARPDialCloseRace(t *testing.T) {
 	ep := &WARPEndpoint{}
-	ep.state.Store(warpStateCreated)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -166,18 +192,17 @@ func TestWARPDialCloseRace(t *testing.T) {
 	}()
 
 	wg.Wait()
-	require.Equal(t, warpStateClosed, ep.state.Load())
+	require.True(t, ep.closed)
+	require.NoError(t, ep.Close())
 }
 
-func TestWARPDoubleStart(t *testing.T) {
+func TestWARPPostStartRequiresStart(t *testing.T) {
 	ep := &WARPEndpoint{
 		ctx:      context.Background(),
 		logger:   log.NewNOPFactory().Logger(),
 		provider: &mockProfileProvider{err: errors.New("provider err")},
 	}
-	ep.state.Store(warpStateReady)
-
-	// When already ready, Start(StartStatePostStart) should succeed idempotently
 	err := ep.Start(adapter.StartStatePostStart)
-	require.NoError(t, err)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "has not completed start stage")
 }

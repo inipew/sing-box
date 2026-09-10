@@ -67,6 +67,10 @@ type WARPConfig struct {
 }
 
 func (c *WARPConfig) WireGuardEndpointOptions() option.WireGuardEndpointOptions {
+	dialerOptions := c.DialerOptions
+	if c.BootstrapResolver != nil {
+		dialerOptions.DomainResolver = c.BootstrapResolver
+	}
 	mtu := c.MTU
 	if mtu == 0 {
 		mtu = DefaultWarpMTU
@@ -117,6 +121,6 @@ func (c *WARPConfig) WireGuardEndpointOptions() option.WireGuardEndpointOptions 
 		},
 		UDPTimeout:    badoption.Duration(c.UDPTimeout),
 		Workers:       c.Workers,
-		DialerOptions: c.DialerOptions,
+		DialerOptions: dialerOptions,
 	}
 }

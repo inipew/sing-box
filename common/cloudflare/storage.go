@@ -5,8 +5,10 @@ package cloudflare
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/tailscale/atomicfile"
 )
 
 func AtomicSaveProfile(filePath string, profile *StoredProfile) error {
@@ -19,32 +21,16 @@ func AtomicSaveProfile(filePath string, profile *StoredProfile) error {
 		return E.Cause(err, "marshal profile")
 	}
 
-	tmpPath := filePath + ".tmp"
-	file, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return E.Cause(err, "create temporary profile file")
+	directory := filepath.Dir(filePath)
+	if err = os.MkdirAll(directory, 0o700); err != nil {
+		return E.Cause(err, "create profile directory")
 	}
-
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmpPath)
-		return E.Cause(err, "write temporary profile file")
+	if err = atomicfile.WriteFile(filePath, data, 0o600); err != nil {
+		return E.Cause(err, "write profile file")
 	}
-
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmpPath)
-		return E.Cause(err, "sync temporary profile file")
-	}
-
-	if err := file.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return E.Cause(err, "close temporary profile file")
-	}
-
-	if err := os.Rename(tmpPath, filePath); err != nil {
-		_ = os.Remove(tmpPath)
-		return E.Cause(err, "rename profile file")
+	if directoryHandle, openErr := os.Open(directory); openErr == nil {
+		_ = directoryHandle.Sync()
+		_ = directoryHandle.Close()
 	}
 
 	return nil

@@ -5,6 +5,7 @@ package cloudflare
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,4 +67,36 @@ func TestLoadProfileCorrupted(t *testing.T) {
 
 	_, err = LoadProfile(filePath)
 	require.Error(t, err)
+}
+
+func TestAtomicSaveProfileCreatesParentAndSupportsConcurrentWriters(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "nested", "profiles", "warp.json")
+	var waiter sync.WaitGroup
+	errors := make(chan error, 8)
+	for index := range 8 {
+		waiter.Add(1)
+		go func() {
+			defer waiter.Done()
+			profile := &StoredProfile{
+				Version: CurrentProfileVersion,
+				Credentials: Credentials{
+					ID:         string(rune('a' + index)),
+					PrivateKey: "private-key",
+				},
+				Tunnel: TunnelSettings{Address: []string{"172.16.0.2/32"}},
+			}
+			errors <- AtomicSaveProfile(filePath, profile)
+		}()
+	}
+	waiter.Wait()
+	close(errors)
+	for saveErr := range errors {
+		require.NoError(t, saveErr)
+	}
+	profile, err := LoadProfile(filePath)
+	require.NoError(t, err)
+	require.NotEmpty(t, profile.Credentials.ID)
+	temporaryFiles, err := filepath.Glob(filepath.Join(filepath.Dir(filePath), ".warp-profile-*"))
+	require.NoError(t, err)
+	require.Empty(t, temporaryFiles)
 }
