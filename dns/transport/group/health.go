@@ -16,6 +16,7 @@ import (
 const (
 	defaultHealthCheckInterval = 10 * time.Minute
 	defaultHealthCheckTimeout  = 5 * time.Second
+	maxHealthCheckConcurrency  = 4
 
 	// healthCheckQuery is the probe domain. Using "." (root) with TypeNS is a
 	// lightweight query that almost all resolvers answer quickly.
@@ -95,14 +96,31 @@ func (h *HealthChecker) loop() {
 }
 
 func (h *HealthChecker) probeAll() {
+	workerCount := min(len(h.members), maxHealthCheckConcurrency)
+	if workerCount == 0 {
+		return
+	}
+	jobs := make(chan adapter.DNSTransport)
 	var waiter sync.WaitGroup
-	for _, transport := range h.members {
+	for range workerCount {
 		waiter.Add(1)
 		go func() {
 			defer waiter.Done()
-			h.probe(transport)
+			for transport := range jobs {
+				h.probe(transport)
+			}
 		}()
 	}
+	for _, transport := range h.members {
+		select {
+		case jobs <- transport:
+		case <-h.ctx.Done():
+			close(jobs)
+			waiter.Wait()
+			return
+		}
+	}
+	close(jobs)
 	waiter.Wait()
 }
 
