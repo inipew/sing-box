@@ -32,7 +32,7 @@ func (d *SequentialDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, 
 			continue
 		}
 		start := time.Now()
-		resp, err := transport.Exchange(ctx, message)
+		resp, err := transport.Exchange(ctx, message.Copy())
 		if err == nil {
 			rtt.Record(tag, time.Since(start))
 			return resp, nil
@@ -81,7 +81,7 @@ func (d *ConcurrentDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, 
 		launched++
 		go func(tag string, transport adapter.DNSTransport) {
 			start := time.Now()
-			resp, err := transport.Exchange(ctx, message)
+			resp, err := transport.Exchange(ctx, message.Copy())
 			ch <- result{tag: tag, resp: resp, rtt: time.Since(start), err: err}
 		}(tag, transport)
 	}
@@ -136,7 +136,7 @@ func (d *FallbackDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, se
 			return nil, E.New("dns group[", d.Tag, "]: single fallback transport not found: ", selected[0])
 		}
 		start := time.Now()
-		resp, err := transport.Exchange(ctx, message)
+		resp, err := transport.Exchange(ctx, message.Copy())
 		if err == nil {
 			rtt.Record(selected[0], time.Since(start))
 			return resp, nil
@@ -167,7 +167,7 @@ func (d *FallbackDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, se
 		}
 		go func(tag string, tr adapter.DNSTransport) {
 			start := time.Now()
-			resp, err := tr.Exchange(ctx, message)
+			resp, err := tr.Exchange(ctx, message.Copy())
 			ch <- result{tag: tag, resp: resp, rtt: time.Since(start), err: err}
 		}(tag, transport)
 		return true

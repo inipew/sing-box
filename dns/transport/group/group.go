@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -48,14 +49,43 @@ type GroupTransport struct {
 	hcOptions     *option.DNSGroupHealthCheckOptions
 
 	lifecycleAccess sync.Mutex
-	access          sync.RWMutex
-	members         []adapter.DNSTransport // resolved at Start
-	clonedMembers   []adapter.DNSTransport // clones created by detour override, must be closed by group
-	strategy        Strategy
-	dispatcher      Dispatcher
+	runtime         atomic.Pointer[groupRuntime]
 	rtt             RTTEstimator
-	hc              *HealthChecker
-	started         bool
+}
+
+type groupRuntime struct {
+	ctx        context.Context
+	cancel     context.CancelFunc
+	members    []adapter.DNSTransport
+	byTag      map[string]adapter.DNSTransport
+	strategy   Strategy
+	dispatcher Dispatcher
+	health     *HealthChecker
+	owned      []adapter.DNSTransport
+	access     sync.Mutex
+	closing    bool
+	waiter     sync.WaitGroup
+}
+
+func (r *groupRuntime) acquire() bool {
+	r.access.Lock()
+	defer r.access.Unlock()
+	if r.closing {
+		return false
+	}
+	r.waiter.Add(1)
+	return true
+}
+
+func (r *groupRuntime) release() {
+	r.waiter.Done()
+}
+
+func (r *groupRuntime) beginClose() {
+	r.access.Lock()
+	r.closing = true
+	r.access.Unlock()
+	r.cancel()
 }
 
 // RegisterTransport registers the group transport type with the DNS transport registry.
@@ -119,7 +149,7 @@ func (t *GroupTransport) Type() string { return C.DNSTypeGroup }
 func (t *GroupTransport) Tag() string  { return t.tag }
 
 func (t *GroupTransport) Dependencies() []string {
-	return t.memberTags
+	return append([]string(nil), t.memberTags...)
 }
 
 func (t *GroupTransport) References() []string {
@@ -130,19 +160,23 @@ func (t *GroupTransport) References() []string {
 }
 
 func (t *GroupTransport) Reset() {
-	t.access.RLock()
-	members := append([]adapter.DNSTransport(nil), t.members...)
-	t.access.RUnlock()
-	for _, m := range members {
+	runtime := t.runtime.Load()
+	if runtime == nil || !runtime.acquire() {
+		return
+	}
+	defer runtime.release()
+	for _, m := range runtime.members {
 		m.Reset()
 	}
 }
 
 func (t *GroupTransport) SetKeepIdleConnections(keep bool) {
-	t.access.RLock()
-	members := append([]adapter.DNSTransport(nil), t.members...)
-	t.access.RUnlock()
-	for _, m := range members {
+	runtime := t.runtime.Load()
+	if runtime == nil || !runtime.acquire() {
+		return
+	}
+	defer runtime.release()
+	for _, m := range runtime.members {
 		if keeper, ok := m.(adapter.IdleConnectionKeeper); ok {
 			keeper.SetKeepIdleConnections(keep)
 		}
@@ -150,10 +184,12 @@ func (t *GroupTransport) SetKeepIdleConnections(keep bool) {
 }
 
 func (t *GroupTransport) CloseIdleConnections() {
-	t.access.RLock()
-	members := append([]adapter.DNSTransport(nil), t.members...)
-	t.access.RUnlock()
-	for _, m := range members {
+	runtime := t.runtime.Load()
+	if runtime == nil || !runtime.acquire() {
+		return
+	}
+	defer runtime.release()
+	for _, m := range runtime.members {
 		if keeper, ok := m.(adapter.IdleConnectionKeeper); ok {
 			keeper.CloseIdleConnections()
 		}
@@ -166,10 +202,7 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 	}
 	t.lifecycleAccess.Lock()
 	defer t.lifecycleAccess.Unlock()
-	t.access.RLock()
-	started := t.started
-	t.access.RUnlock()
-	if started {
+	if t.runtime.Load() != nil {
 		return nil
 	}
 
@@ -227,21 +260,32 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 		clonedMembers = cloned
 	}
 
-	var hc *HealthChecker
-	if t.hcOptions != nil {
-		hc = NewHealthChecker(t.ctx, members, t.hcOptions, t.rtt, t.logger)
+	runtimeCtx, cancelRuntime := context.WithCancel(t.ctx)
+	runtime := &groupRuntime{
+		ctx:        runtimeCtx,
+		cancel:     cancelRuntime,
+		members:    members,
+		byTag:      make(map[string]adapter.DNSTransport, len(members)),
+		strategy:   strategy,
+		dispatcher: dispatcher,
+		owned:      clonedMembers,
 	}
-	t.access.Lock()
-	t.members = members
-	t.clonedMembers = clonedMembers
-	t.strategy = strategy
-	t.dispatcher = dispatcher
-	t.hc = hc
-	t.started = true
-	t.access.Unlock()
-
-	if hc != nil {
-		hc.Start()
+	for _, member := range members {
+		if _, exists := runtime.byTag[member.Tag()]; exists {
+			cancelRuntime()
+			for _, owned := range clonedMembers {
+				_ = owned.Close()
+			}
+			return E.New("dns group[", t.tag, "]: duplicate member tag: ", member.Tag())
+		}
+		runtime.byTag[member.Tag()] = member
+	}
+	if t.hcOptions != nil {
+		runtime.health = NewHealthChecker(runtimeCtx, members, t.hcOptions, t.rtt, t.logger)
+	}
+	t.runtime.Store(runtime)
+	if runtime.health != nil {
+		runtime.health.Start()
 	}
 
 	detourInfo := ""
@@ -292,19 +336,17 @@ func (t *GroupTransport) wrapMembersWithDialer(members []adapter.DNSTransport, o
 func (t *GroupTransport) Close() error {
 	t.lifecycleAccess.Lock()
 	defer t.lifecycleAccess.Unlock()
-	t.access.Lock()
-	t.started = false
-	hc := t.hc
-	t.hc = nil
-	clonedMembers := t.clonedMembers
-	t.clonedMembers = nil
-	t.access.Unlock()
-
-	if hc != nil {
-		hc.Close()
+	runtime := t.runtime.Swap(nil)
+	if runtime == nil {
+		return nil
 	}
+	runtime.beginClose()
+	if runtime.health != nil {
+		runtime.health.Close()
+	}
+	runtime.waiter.Wait()
 	var err error
-	for _, m := range clonedMembers {
+	for _, m := range runtime.owned {
 		err = E.Append(err, m.Close(), func(closeErr error) error {
 			return E.Cause(closeErr, "close cloned DNS transport ", m.Tag())
 		})
@@ -343,34 +385,30 @@ func (t *GroupTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
 }
 
 func (t *GroupTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
-	t.access.RLock()
-	members := append([]adapter.DNSTransport(nil), t.members...)
-	strategy := t.strategy
-	dispatcher := t.dispatcher
-	started := t.started
-	rtt := t.rtt
-	t.access.RUnlock()
-
-	if !started {
+	runtime := t.runtime.Load()
+	if runtime == nil || !runtime.acquire() {
 		return nil, E.New("dns group[", t.tag, "]: not started")
 	}
-	if len(members) == 0 {
+	defer runtime.release()
+	if len(runtime.members) == 0 {
 		return nil, E.New("dns group[", t.tag, "]: no member transports")
 	}
-
-	tags := make([]string, len(members))
-	tagToTransport := make(map[string]adapter.DNSTransport, len(members))
-	for i, m := range members {
+	tags := make([]string, len(runtime.members))
+	for i, m := range runtime.members {
 		tags[i] = m.Tag()
-		tagToTransport[m.Tag()] = m
 	}
-
-	selected := strategy.Select(tags, rtt)
+	selected := runtime.strategy.Select(tags, t.rtt)
 	if len(selected) == 0 {
 		return nil, E.New("dns group[", t.tag, "]: strategy returned no servers")
 	}
 
-	return dispatcher.Dispatch(ctx, message, selected, tagToTransport, rtt)
+	queryCtx, cancelQuery := context.WithCancel(ctx)
+	stopRuntimeCancel := context.AfterFunc(runtime.ctx, cancelQuery)
+	defer func() {
+		stopRuntimeCancel()
+		cancelQuery()
+	}()
+	return runtime.dispatcher.Dispatch(queryCtx, message, selected, runtime.byTag, t.rtt)
 }
 
 func (t *GroupTransport) ExchangeAsync(ctx context.Context, message *mDNS.Msg, callback func(response *mDNS.Msg, err error)) {
@@ -380,12 +418,12 @@ func (t *GroupTransport) ExchangeAsync(ctx context.Context, message *mDNS.Msg, c
 }
 
 func (t *GroupTransport) Stats() []adapter.DNSTransportMemberStats {
-	t.access.RLock()
-	members := t.members
-	rtt := t.rtt
-	t.access.RUnlock()
-
-	snapshots := rtt.AllSnapshots()
+	runtime := t.runtime.Load()
+	if runtime == nil {
+		return nil
+	}
+	snapshots := t.rtt.AllSnapshots()
+	members := runtime.members
 	stats := make([]adapter.DNSTransportMemberStats, len(members))
 	for i, m := range members {
 		entry, ok := snapshots[m.Tag()]

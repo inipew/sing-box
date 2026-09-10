@@ -9,6 +9,7 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/dns/transport/group"
+	"github.com/stretchr/testify/require"
 
 	mDNS "github.com/miekg/dns"
 )
@@ -316,5 +317,34 @@ func TestGroupMaxRetries(t *testing.T) {
 	}
 	if c.callCount.Load() > 0 {
 		t.Error("server 'c' should not have been called with maxRetries=2")
+	}
+}
+
+func TestGroupCloseCancelsActiveExchange(t *testing.T) {
+	slow := &fakeTransport{tag: "slow", delay: time.Minute}
+	tr := group.ExportNewGroupWithMembersOrdered(t, "test-close", "sequential", 0,
+		[]adapter.DNSTransport{slow})
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := tr.Exchange(context.Background(), makeMsg())
+		result <- err
+	}()
+
+	require.Eventually(t, func() bool {
+		return slow.callCount.Load() == 1
+	}, time.Second, time.Millisecond)
+	require.NoError(t, tr.Close())
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation after close, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("active exchange was not canceled by close")
+	}
+	_, err := tr.Exchange(context.Background(), makeMsg())
+	if err == nil {
+		t.Fatal("expected exchange after close to fail")
 	}
 }

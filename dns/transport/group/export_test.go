@@ -3,6 +3,7 @@
 package group
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -107,11 +108,20 @@ func buildGroupTransport(
 		fallbackDelay: fallbackDelay,
 		maxRetries:    maxRetries,
 		rtt:           newRTTEstimator(0),
-		members:       members,
-		strategy:      strategy,
-		dispatcher:    dispatcher,
-		started:       true,
 	}
+	runtimeCtx, cancelRuntime := context.WithCancel(context.Background())
+	byTag := make(map[string]adapter.DNSTransport, len(members))
+	for _, member := range members {
+		byTag[member.Tag()] = member
+	}
+	tr.runtime.Store(&groupRuntime{
+		ctx:        runtimeCtx,
+		cancel:     cancelRuntime,
+		members:    members,
+		byTag:      byTag,
+		strategy:   strategy,
+		dispatcher: dispatcher,
+	})
 
 	t.Cleanup(func() { _ = tr.Close() })
 	return tr
