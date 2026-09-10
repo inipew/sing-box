@@ -128,9 +128,13 @@ func (p *CloudflareProfileProvider) Load(ctx context.Context) (*WARPConfig, erro
 		if cacheFile != nil {
 			if dataStr := cacheFile.LoadWarp(p.tag); dataStr != "" {
 				var cached cloudflare.StoredProfile
-				if err := json.Unmarshal([]byte(dataStr), &cached); err == nil && cached.Credentials.PrivateKey != "" && len(cached.Tunnel.Address) > 0 {
+				if err := json.Unmarshal([]byte(dataStr), &cached); err != nil {
+					p.logger.Warn("ignore invalid cached Cloudflare WARP profile: ", err)
+				} else if cached.Credentials.PrivateKey != "" && len(cached.Tunnel.Address) > 0 {
 					p.logger.Info("loaded cached Cloudflare WARP profile from cache database")
 					storedProfile = &cached
+				} else {
+					p.logger.Warn("ignore incomplete cached Cloudflare WARP profile")
 				}
 			}
 		}
@@ -152,10 +156,25 @@ func (p *CloudflareProfileProvider) Load(ctx context.Context) (*WARPConfig, erro
 		client := cloudflare.NewClient(p.makeHTTPClient(ctx))
 		newProfile, err := client.Register(ctx, privateKey.String(), privateKey.PublicKey().String(), provision.License)
 		if err != nil {
+			if newProfile != nil {
+				p.saveProfile(ctx, cacheFile, storagePath, newProfile)
+			}
 			return nil, E.Cause(err, "register Cloudflare WARP account")
 		}
 
 		storedProfile = newProfile
+		p.saveProfile(ctx, cacheFile, storagePath, storedProfile)
+	}
+	if provision.License != "" && storedProfile.Credentials.License != provision.License {
+		if storedProfile.Credentials.ID == "" || storedProfile.Credentials.Token == "" {
+			return nil, E.New("cached WARP profile cannot update license: missing device credentials")
+		}
+		client := cloudflare.NewClient(p.makeHTTPClient(ctx))
+		if err := client.UpdateLicense(ctx, storedProfile.Credentials.ID, storedProfile.Credentials.Token, provision.License); err != nil {
+			return nil, E.Cause(err, "update cached Cloudflare WARP license")
+		}
+		storedProfile.Credentials.License = provision.License
+		storedProfile.UpdatedAt = time.Now()
 		p.saveProfile(ctx, cacheFile, storagePath, storedProfile)
 	}
 
@@ -250,6 +269,8 @@ func (p *CloudflareProfileProvider) saveProfile(ctx context.Context, cacheFile a
 			if saveErr := cacheFile.SaveWarp(p.tag, string(data)); saveErr != nil {
 				p.logger.Warn("failed to save WARP profile to cache database: ", saveErr)
 			}
+		} else {
+			p.logger.Warn("failed to encode WARP profile for cache database: ", err)
 		}
 	}
 	if err := cloudflare.AtomicSaveProfile(storagePath, profile); err != nil {

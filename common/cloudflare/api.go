@@ -30,7 +30,7 @@ func NewClient(httpClient *http.Client) *Client {
 func (c *Client) Register(ctx context.Context, privateKeyBase64, publicKeyBase64, license string) (*StoredProfile, error) {
 	payload := map[string]any{
 		"key":          publicKeyBase64,
-		"install_id":   generateRandomHex(22),
+		"install_id":   "",
 		"fcm_token":    "",
 		"referrer":     "",
 		"warp_enabled": true,
@@ -39,7 +39,15 @@ func (c *Client) Register(ctx context.Context, privateKeyBase64, publicKeyBase64
 		"locale":       "en_US",
 	}
 
-	reqBytes, _ := json.Marshal(payload)
+	installID, err := generateRandomHex(22)
+	if err != nil {
+		return nil, E.Cause(err, "generate install ID")
+	}
+	payload["install_id"] = installID
+	reqBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, E.Cause(err, "encode register request")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.cloudflareclient.com/v0a1922/reg", bytes.NewReader(reqBytes))
 	if err != nil {
 		return nil, err
@@ -54,7 +62,7 @@ func (c *Client) Register(ctx context.Context, privateKeyBase64, publicKeyBase64
 	defer common.Close(resp.Body)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		return nil, E.New("failed to register warp, status: ", resp.Status, " body: ", string(bodyBytes))
 	}
 
@@ -106,7 +114,6 @@ func (c *Client) Register(ctx context.Context, privateKeyBase64, publicKeyBase64
 		Credentials: Credentials{
 			ID:         regResp.ID,
 			Token:      regResp.Token,
-			License:    license,
 			PrivateKey: privateKeyBase64,
 		},
 		Tunnel: TunnelSettings{
@@ -120,15 +127,19 @@ func (c *Client) Register(ctx context.Context, privateKeyBase64, publicKeyBase64
 
 	if license != "" {
 		if err := c.UpdateLicense(ctx, regResp.ID, regResp.Token, license); err != nil {
-			// Non-fatal, return profile with warning in caller
+			return profile, E.Cause(err, "update WARP license")
 		}
+		profile.Credentials.License = license
 	}
 
 	return profile, nil
 }
 
 func (c *Client) UpdateLicense(ctx context.Context, deviceID, token, license string) error {
-	reqBytes, _ := json.Marshal(map[string]any{"license": license})
+	reqBytes, err := json.Marshal(map[string]any{"license": license})
+	if err != nil {
+		return E.Cause(err, "encode license request")
+	}
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPut,
@@ -149,14 +160,16 @@ func (c *Client) UpdateLicense(ctx context.Context, deviceID, token, license str
 	defer common.Close(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		return E.New("failed to update license, status: ", resp.Status, " body: ", string(bodyBytes))
 	}
 	return nil
 }
 
-func generateRandomHex(length int) string {
+func generateRandomHex(length int) (string, error) {
 	b := make([]byte, length)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
