@@ -1,6 +1,7 @@
 package cachefile
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net/netip"
 	"time"
@@ -86,12 +87,29 @@ func (c *CacheFile) Flush() {
 
 func (c *CacheFile) writePending(tx *bbolt.Tx, pending *pendingWrites) error {
 	if len(pending.dnsCache) > 0 {
-		bucket, err := c.createBucket(tx, bucketDNSCache)
-		if err != nil {
-			return err
-		}
+		var bucket *bbolt.Bucket
 		for key, entry := range pending.dnsCache {
-			err = putCacheEntry(bucket, key, entry.value)
+			if entry.delete {
+				if bucket == nil {
+					bucket = c.bucket(tx, bucketDNSCache)
+				}
+				if bucket == nil {
+					continue
+				}
+				err := deleteCacheEntryIf(bucket, key, entry.expected)
+				if err != nil {
+					return err
+				}
+				continue
+			}
+			if bucket == nil {
+				var err error
+				bucket, err = c.createBucket(tx, bucketDNSCache)
+				if err != nil {
+					return err
+				}
+			}
+			err := putCacheEntry(bucket, key, entry.value)
 			if err != nil {
 				return err
 			}
@@ -148,4 +166,20 @@ func getCacheEntry(bucket *bbolt.Bucket, key saveCacheKey) []byte {
 	binary.BigEndian.PutUint16(keyBytes, key.QType)
 	copy(keyBytes[2:], key.QuestionName)
 	return transportBucket.Get(keyBytes)
+}
+
+func deleteCacheEntryIf(bucket *bbolt.Bucket, key saveCacheKey, expected []byte) error {
+	transportBucket := bucket.Bucket([]byte(key.TransportName))
+	if transportBucket == nil {
+		return nil
+	}
+	keyBytes := buf.Get(2 + len(key.QuestionName))
+	defer buf.Put(keyBytes)
+	binary.BigEndian.PutUint16(keyBytes, key.QType)
+	copy(keyBytes[2:], key.QuestionName)
+	current := transportBucket.Get(keyBytes)
+	if len(current) < 8 || !bytes.Equal(current[8:], expected) {
+		return nil
+	}
+	return transportBucket.Delete(keyBytes)
 }

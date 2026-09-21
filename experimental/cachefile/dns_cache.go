@@ -1,6 +1,7 @@
 package cachefile
 
 import (
+	"bytes"
 	"encoding/binary"
 	"time"
 
@@ -23,6 +24,9 @@ func (c *CacheFile) LoadDNSCache(transportName string, qName string, qType uint1
 	}
 	c.pendingAccess.RUnlock()
 	if cached {
+		if entry.delete || len(entry.value) < 8 {
+			return nil, time.Time{}, false
+		}
 		return entry.value[8:], time.Unix(int64(binary.BigEndian.Uint64(entry.value[:8])), 0), true
 	}
 	err := c.view(func(tx *bbolt.Tx) error {
@@ -64,8 +68,28 @@ func (c *CacheFile) queueDNSCache(transportName string, qName string, qType uint
 	c.pendingAccess.Lock()
 	defer c.pendingAccess.Unlock()
 	oldEntry, loaded := c.pending.dnsCache[key]
-	c.pending.dnsCache[key] = saveDNSCacheEntry{value}
-	c.enqueueLocked(!loaded, len(qName)+len(value)-len(oldEntry.value))
+	c.pending.dnsCache[key] = saveDNSCacheEntry{value: value}
+	c.enqueueLocked(!loaded, len(qName)+len(value)-oldEntry.size())
+}
+
+func (c *CacheFile) DeleteDNSCache(transportName string, qName string, qType uint16, rawMessage []byte) {
+	key := saveCacheKey{transportName, qName, qType}
+	c.pendingAccess.Lock()
+	defer c.pendingAccess.Unlock()
+	oldEntry, loaded := c.pending.dnsCache[key]
+	if loaded {
+		if oldEntry.delete || len(oldEntry.value) < 8 || !bytes.Equal(oldEntry.value[8:], rawMessage) {
+			return
+		}
+	} else if c.writing != nil {
+		writingEntry, writing := c.writing.dnsCache[key]
+		if writing && (writingEntry.delete || len(writingEntry.value) < 8 || !bytes.Equal(writingEntry.value[8:], rawMessage)) {
+			return
+		}
+	}
+	expected := bytes.Clone(rawMessage)
+	c.pending.dnsCache[key] = saveDNSCacheEntry{delete: true, expected: expected}
+	c.enqueueLocked(!loaded, len(qName)+len(expected)-oldEntry.size())
 }
 
 func (c *CacheFile) ClearDNSCache() error {
@@ -74,7 +98,7 @@ func (c *CacheFile) ClearDNSCache() error {
 	c.pendingAccess.Lock()
 	for key, entry := range c.pending.dnsCache {
 		c.pending.count--
-		c.pending.size -= len(key.QuestionName) + len(entry.value)
+		c.pending.size -= len(key.QuestionName) + entry.size()
 	}
 	clear(c.pending.dnsCache)
 	c.pendingAccess.Unlock()
