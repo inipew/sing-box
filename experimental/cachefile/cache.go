@@ -81,7 +81,13 @@ type saveCacheKey struct {
 }
 
 type saveDNSCacheEntry struct {
-	value []byte
+	value    []byte
+	delete   bool
+	expected []byte
+}
+
+func (e saveDNSCacheEntry) size() int {
+	return len(e.value) + len(e.expected)
 }
 
 func New(ctx context.Context, logger logger.Logger, options option.CacheFileOptions) *CacheFile {
