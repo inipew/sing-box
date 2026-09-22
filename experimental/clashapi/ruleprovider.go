@@ -1,58 +1,103 @@
 package clashapi
 
 import (
+	"context"
 	"net/http"
+	"time"
+
+	"github.com/sagernet/sing-box/adapter"
+	C "github.com/sagernet/sing-box/constant"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
 )
 
-func ruleProviderRouter() http.Handler {
+type ruleSetRouter interface {
+	RuleSet(tag string) (adapter.RuleSet, bool)
+	RuleSets() []adapter.RuleSet
+}
+
+func ruleProviderRouter(router ruleSetRouter) http.Handler {
 	r := chi.NewRouter()
-	r.Get("/", getRuleProviders)
+	r.Get("/", getRuleProviders(router))
 
 	r.Route("/{name}", func(r chi.Router) {
-		r.Use(parseProviderName, findRuleProviderByName)
+		r.Use(parseProviderName, findRuleProviderByName(router))
 		r.Get("/", getRuleProvider)
 		r.Put("/", updateRuleProvider)
 	})
 	return r
 }
 
-func getRuleProviders(w http.ResponseWriter, r *http.Request) {
-	render.JSON(w, r, render.M{
-		"providers": []string{},
-	})
+func ruleSetInfo(ruleSet adapter.RuleSetProvider) render.M {
+	providerInfo := ruleSet.ProviderInfo()
+	vehicleType := "File"
+	if providerInfo.Type == C.RuleSetTypeRemote {
+		vehicleType = "HTTP"
+	}
+	behavior := "Inline"
+	switch providerInfo.Format {
+	case C.RuleSetFormatSource:
+		behavior = "Source"
+	case C.RuleSetFormatBinary:
+		behavior = "Binary"
+	}
+	return render.M{
+		"name":        ruleSet.Name(),
+		"type":        "Rule",
+		"vehicleType": vehicleType,
+		"behavior":    behavior,
+		"ruleCount":   providerInfo.RuleCount,
+		"updatedAt":   providerInfo.UpdatedAt.Format(time.RFC3339),
+	}
 }
 
-func getRuleProvider(w http.ResponseWriter, r *http.Request) {
-	// provider := r.Context().Value(CtxKeyProvider).(provider.RuleProvider)
-	// render.JSON(w, r, provider)
-	render.NoContent(w, r)
+func getRuleProviders(router ruleSetRouter) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		providers := make(map[string]render.M)
+		for _, ruleSet := range router.RuleSets() {
+			provider, isProvider := ruleSet.(adapter.RuleSetProvider)
+			if isProvider {
+				providers[provider.Name()] = ruleSetInfo(provider)
+			}
+		}
+		render.JSON(writer, request, render.M{"providers": providers})
+	}
 }
 
-func updateRuleProvider(w http.ResponseWriter, r *http.Request) {
-	/*provider := r.Context().Value(CtxKeyProvider).(provider.RuleProvider)
-	if err := provider.Update(); err != nil {
-		render.Status(r, http.StatusServiceUnavailable)
-		render.JSON(w, r, newError(err.Error()))
+func getRuleProvider(writer http.ResponseWriter, request *http.Request) {
+	provider := request.Context().Value(CtxKeyProvider).(adapter.RuleSetProvider)
+	render.JSON(writer, request, ruleSetInfo(provider))
+}
+
+func updateRuleProvider(writer http.ResponseWriter, request *http.Request) {
+	provider := request.Context().Value(CtxKeyProvider).(adapter.RuleSetProvider)
+	if err := provider.Update(request.Context()); err != nil {
+		render.Status(request, http.StatusInternalServerError)
+		render.JSON(writer, request, newError(err.Error()))
 		return
-	}*/
-	render.NoContent(w, r)
+	}
+	render.NoContent(writer, request)
 }
 
-func findRuleProviderByName(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		/*name := r.Context().Value(CtxKeyProviderName).(string)
-		providers := tunnel.RuleProviders()
-		provider, exist := providers[name]
-		if !exist {*/
-		render.Status(r, http.StatusNotFound)
-		render.JSON(w, r, ErrNotFound)
-		//return
-		//}
-
-		// ctx := context.WithValue(r.Context(), CtxKeyProvider, provider)
-		// next.ServeHTTP(w, r.WithContext(ctx))
-	})
+func findRuleProviderByName(router ruleSetRouter) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			name := request.Context().Value(CtxKeyProviderName).(string)
+			ruleSet, loaded := router.RuleSet(name)
+			if !loaded {
+				render.Status(request, http.StatusNotFound)
+				render.JSON(writer, request, ErrNotFound)
+				return
+			}
+			provider, isProvider := ruleSet.(adapter.RuleSetProvider)
+			if !isProvider {
+				render.Status(request, http.StatusNotFound)
+				render.JSON(writer, request, ErrNotFound)
+				return
+			}
+			ctx := context.WithValue(request.Context(), CtxKeyProvider, provider)
+			next.ServeHTTP(writer, request.WithContext(ctx))
+		})
+	}
 }

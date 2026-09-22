@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/sagernet/fswatch"
 	"github.com/sagernet/sing-box/adapter"
@@ -26,24 +27,28 @@ import (
 var _ adapter.RuleSet = (*LocalRuleSet)(nil)
 
 type LocalRuleSet struct {
-	ctx        context.Context
-	logger     logger.Logger
-	tag        string
-	access     sync.RWMutex
-	rules      []adapter.HeadlessRule
-	metadata   adapter.RuleSetMetadata
-	fileFormat string
-	watcher    *fswatch.Watcher
-	callbacks  list.List[adapter.RuleSetUpdateCallback]
-	refs       atomic.Int32
+	ctx         context.Context
+	logger      logger.Logger
+	tag         string
+	access      sync.RWMutex
+	rules       []adapter.HeadlessRule
+	metadata    adapter.RuleSetMetadata
+	fileFormat  string
+	watcher     *fswatch.Watcher
+	callbacks   list.List[adapter.RuleSetUpdateCallback]
+	refs        atomic.Int32
+	ruleSetType string
+	ruleCount   uint64
+	lastUpdated time.Time
 }
 
 func NewLocalRuleSet(ctx context.Context, logger logger.Logger, tag string, options option.RuleSet) (*LocalRuleSet, error) {
 	ruleSet := &LocalRuleSet{
-		ctx:        ctx,
-		logger:     logger,
-		tag:        tag,
-		fileFormat: options.Format,
+		ctx:         ctx,
+		logger:      logger,
+		tag:         tag,
+		fileFormat:  options.Format,
+		ruleSetType: options.Type,
 	}
 	if options.Type == C.RuleSetTypeInline {
 		if len(options.InlineOptions.Rules) == 0 {
@@ -81,6 +86,21 @@ func (s *LocalRuleSet) Name() string {
 	return s.tag
 }
 
+func (s *LocalRuleSet) ProviderInfo() adapter.RuleSetProviderInfo {
+	s.access.RLock()
+	defer s.access.RUnlock()
+	return adapter.RuleSetProviderInfo{
+		Type:      s.ruleSetType,
+		Format:    s.fileFormat,
+		RuleCount: s.ruleCount,
+		UpdatedAt: s.lastUpdated,
+	}
+}
+
+func (s *LocalRuleSet) Update(context.Context) error {
+	return nil
+}
+
 func (s *LocalRuleSet) String() string {
 	return strings.Join(F.MapToString(s.rules), " ")
 }
@@ -96,6 +116,10 @@ func (s *LocalRuleSet) StartContext(ctx context.Context, startContext *adapter.H
 }
 
 func (s *LocalRuleSet) reloadFile(path string) error {
+	fileInfo, err := filemanager.Stat(s.ctx, path)
+	if err != nil {
+		return err
+	}
 	var ruleSet option.PlainRuleSetCompat
 	switch s.fileFormat {
 	case C.RuleSetFormatSource, "":
@@ -124,10 +148,14 @@ func (s *LocalRuleSet) reloadFile(path string) error {
 	if err != nil {
 		return err
 	}
-	return s.reloadRules(plainRuleSet.Rules)
+	return s.reloadRulesAt(plainRuleSet.Rules, fileInfo.ModTime())
 }
 
 func (s *LocalRuleSet) reloadRules(headlessRules []option.HeadlessRule) error {
+	return s.reloadRulesAt(headlessRules, time.Time{})
+}
+
+func (s *LocalRuleSet) reloadRulesAt(headlessRules []option.HeadlessRule, updatedAt time.Time) error {
 	rules := make([]adapter.HeadlessRule, len(headlessRules))
 	var err error
 	for i, ruleOptions := range headlessRules {
@@ -144,6 +172,8 @@ func (s *LocalRuleSet) reloadRules(headlessRules []option.HeadlessRule) error {
 	s.access.Lock()
 	s.rules = rules
 	s.metadata = metadata
+	s.ruleCount = uint64(len(headlessRules))
+	s.lastUpdated = updatedAt
 	callbacks := s.callbacks.Array()
 	s.access.Unlock()
 	for _, callback := range callbacks {
