@@ -34,6 +34,16 @@ type RuleAction interface {
 	String() string
 }
 
+type RuleInfo struct {
+	Type    string
+	Payload string
+	Action  string
+}
+
+type DNSRuleInfoProvider interface {
+	DNSRuleInfo() []RuleInfo
+}
+
 func IsFinalAction(action RuleAction) bool {
 	switch action.Type() {
 	case C.RuleActionTypeSniff, C.RuleActionTypeResolve, C.RuleActionTypeEvaluate:

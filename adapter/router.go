@@ -135,6 +135,19 @@ type RuleSet interface {
 	HeadlessRule
 }
 
+type RuleSetProvider interface {
+	RuleSet
+	ProviderInfo() RuleSetProviderInfo
+	Update(ctx context.Context) error
+}
+
+type RuleSetProviderInfo struct {
+	Type      string
+	Format    string
+	RuleCount uint64
+	UpdatedAt time.Time
+}
+
 type RuleSetUpdateCallback func(it RuleSet)
 
 type DNSRuleSetUpdateValidator interface {
