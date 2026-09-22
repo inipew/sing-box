@@ -44,9 +44,11 @@ type RemoteRuleSet struct {
 	options        option.RuleSet
 	updateInterval time.Duration
 	httpClient     *http.Client
+	updateAccess   sync.Mutex
 	access         sync.RWMutex
 	rules          []adapter.HeadlessRule
 	metadata       adapter.RuleSetMetadata
+	ruleCount      uint64
 	lastUpdated    time.Time
 	lastEtag       string
 	cacheFile      adapter.CacheFile
@@ -88,6 +90,32 @@ func (s *RemoteRuleSet) Name() string {
 	return s.tag
 }
 
+func (s *RemoteRuleSet) ProviderInfo() adapter.RuleSetProviderInfo {
+	s.access.RLock()
+	defer s.access.RUnlock()
+	return adapter.RuleSetProviderInfo{
+		Type:      C.RuleSetTypeRemote,
+		Format:    s.options.Format,
+		RuleCount: s.ruleCount,
+		UpdatedAt: s.lastUpdated,
+	}
+}
+
+func (s *RemoteRuleSet) Update(ctx context.Context) error {
+	s.updateAccess.Lock()
+	defer s.updateAccess.Unlock()
+	err := s.fetch(ctx, false)
+	if err != nil {
+		return err
+	}
+	if s.refs.Load() == 0 {
+		s.access.Lock()
+		s.rules = nil
+		s.access.Unlock()
+	}
+	return nil
+}
+
 func (s *RemoteRuleSet) String() string {
 	return strings.Join(F.MapToString(s.rules), " ")
 }
@@ -110,8 +138,10 @@ func (s *RemoteRuleSet) StartContext(ctx context.Context, startContext *adapter.
 				if err != nil {
 					s.logger.Warn(E.Cause(err, "restore cached rule-set, will refetch"))
 				} else {
+					s.access.Lock()
 					s.lastUpdated = savedSet.LastUpdated
 					s.lastEtag = savedSet.LastEtag
+					s.access.Unlock()
 				}
 			}
 		}
@@ -216,6 +246,7 @@ func (s *RemoteRuleSet) loadBytes(content []byte) error {
 	s.access.Lock()
 	s.metadata = metadata
 	s.rules = rules
+	s.ruleCount = uint64(len(plainRuleSet.Rules))
 	callbacks := s.callbacks.Array()
 	s.access.Unlock()
 	for _, callback := range callbacks {
@@ -225,11 +256,9 @@ func (s *RemoteRuleSet) loadBytes(content []byte) error {
 }
 
 func (s *RemoteRuleSet) updateOnce() {
-	err := s.fetch(s.ctx, false)
+	err := s.Update(s.ctx)
 	if err != nil {
 		s.logger.Error("fetch rule-set ", s.tag, ": ", err)
-	} else if s.refs.Load() == 0 {
-		s.rules = nil
 	}
 }
 
@@ -239,8 +268,11 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, isStart bool) error {
 	if err != nil {
 		return err
 	}
-	if s.lastEtag != "" {
-		request.Header.Set("If-None-Match", s.lastEtag)
+	s.access.RLock()
+	lastEtag := s.lastEtag
+	s.access.RUnlock()
+	if lastEtag != "" {
+		request.Header.Set("If-None-Match", lastEtag)
 	}
 	if !isStart {
 		defer s.httpClient.CloseIdleConnections()
@@ -253,11 +285,14 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, isStart bool) error {
 	switch response.StatusCode {
 	case http.StatusOK:
 	case http.StatusNotModified:
-		s.lastUpdated = time.Now()
+		lastUpdated := time.Now()
+		s.access.Lock()
+		s.lastUpdated = lastUpdated
+		s.access.Unlock()
 		if s.cacheFile != nil {
 			savedRuleSet := s.cacheFile.LoadRuleSet(s.tag)
 			if savedRuleSet != nil {
-				savedRuleSet.LastUpdated = s.lastUpdated
+				savedRuleSet.LastUpdated = lastUpdated
 				savedRuleSet.URLHash = s.urlHash[:]
 				err = s.cacheFile.SaveRuleSet(s.tag, savedRuleSet)
 				if err != nil {
@@ -280,15 +315,19 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, isStart bool) error {
 		return err
 	}
 	eTagHeader := response.Header.Get("Etag")
+	lastUpdated := time.Now()
+	s.access.Lock()
 	if eTagHeader != "" {
 		s.lastEtag = eTagHeader
 	}
-	s.lastUpdated = time.Now()
+	s.lastUpdated = lastUpdated
+	lastEtag = s.lastEtag
+	s.access.Unlock()
 	if s.cacheFile != nil {
 		err = s.cacheFile.SaveRuleSet(s.tag, &adapter.SavedBinary{
-			LastUpdated: s.lastUpdated,
+			LastUpdated: lastUpdated,
 			Content:     content,
-			LastEtag:    s.lastEtag,
+			LastEtag:    lastEtag,
 			URLHash:     s.urlHash[:],
 		})
 		if err != nil {
