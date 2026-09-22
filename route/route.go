@@ -328,6 +328,8 @@ func (r *Router) routePacketConnection(ctx context.Context, conn N.PacketConn, m
 	}
 	if metadata.FakeIP {
 		conn = newFakeIPNATPacketConn(bufio.NewNetPacketConn(conn), metadata.OriginDestination, metadata.Destination)
+	} else {
+		conn = wrapSniffDestinationOverride(conn, metadata)
 	}
 	ctx = interrupt.ContextWithIsExternalConnection(ctx, true)
 	if metadata.RateLimit != nil && r.rateLimitManager != nil {
@@ -395,6 +397,7 @@ func (r *Router) PreMatch(metadata adapter.InboundContext, firstPacket []byte) a
 				}
 				continue
 			}
+
 			if metadata.Domain != "" && metadata.Client != "" {
 				r.logger.DebugContext(ctx, "sniffed packet protocol: ", metadata.Protocol, ", domain: ", metadata.Domain, ", client: ", metadata.Client)
 			} else if metadata.Domain != "" {
@@ -585,7 +588,7 @@ func (r *Router) prepareMatchMetadata(ctx context.Context, metadata *adapter.Inb
 			r.logger.InfoContext(ctx, "found neighbor: ", mac)
 		}
 	}
-	if metadata.Destination.Addr.IsValid() && r.dnsTransport.FakeIP() != nil && r.dnsTransport.FakeIP().Store().Contains(metadata.Destination.Addr) {
+	if metadata.Destination.Addr.IsValid() && r.dnsTransport != nil && r.dnsTransport.FakeIP() != nil && r.dnsTransport.FakeIP().Store().Contains(metadata.Destination.Addr) {
 		domain, loaded := r.dnsTransport.FakeIP().Store().Lookup(metadata.Destination.Addr)
 		if !loaded {
 			return E.New("missing fakeip record, try enable `experimental.cache_file`")
@@ -597,10 +600,12 @@ func (r *Router) prepareMatchMetadata(ctx context.Context, metadata *adapter.Inb
 				Port: metadata.Destination.Port,
 			}
 			metadata.FakeIP = true
-			metadata.ECHPublicName = r.dns.LookupECHPublicName(domain)
+			if r.dns != nil {
+				metadata.ECHPublicName = r.dns.LookupECHPublicName(domain)
+			}
 			r.logger.DebugContext(ctx, "found fakeip domain: ", domain)
 		}
-	} else if metadata.Domain == "" {
+	} else if metadata.Domain == "" && r.dns != nil {
 		domain, loaded := r.dns.LookupReverseMapping(metadata.Destination.Addr)
 		if loaded {
 			metadata.Domain = domain
@@ -776,6 +781,7 @@ func (r *Router) actionSniff(
 		metadata.SnifferNames = action.SnifferNames
 		metadata.SniffError = err
 		if err == nil {
+
 			if metadata.Domain != "" && metadata.Client != "" {
 				r.logger.DebugContext(ctx, "sniffed protocol: ", metadata.Protocol, ", domain: ", metadata.Domain, ", client: ", metadata.Client)
 			} else if metadata.Domain != "" {
@@ -892,6 +898,7 @@ func (r *Router) actionSniff(
 		}
 	finally:
 		if err == nil {
+
 			if metadata.Domain != "" && metadata.Client != "" {
 				r.logger.DebugContext(ctx, "sniffed packet protocol: ", metadata.Protocol, ", domain: ", metadata.Domain, ", client: ", metadata.Client)
 			} else if metadata.Domain != "" {
@@ -904,6 +911,27 @@ func (r *Router) actionSniff(
 		}
 	}
 	return
+}
+
+func applySniffDestinationOverride(metadata *adapter.InboundContext) {
+	if metadata.Destination.IsDomain() || !M.IsDomainName(metadata.Domain) {
+		return
+	}
+	if metadata.Network == N.NetworkUDP {
+		metadata.OriginDestination = metadata.Destination
+		metadata.DestOverride = true
+	}
+	metadata.Destination = M.Socksaddr{
+		Fqdn: metadata.Domain,
+		Port: metadata.Destination.Port,
+	}
+}
+
+func wrapSniffDestinationOverride(conn N.PacketConn, metadata adapter.InboundContext) N.PacketConn {
+	if !metadata.DestOverride {
+		return conn
+	}
+	return bufio.NewNATPacketConn(bufio.NewNetPacketConn(conn), metadata.OriginDestination, metadata.Destination)
 }
 
 func (r *Router) actionResolve(ctx context.Context, metadata *adapter.InboundContext, action *R.RuleActionResolve) error {
