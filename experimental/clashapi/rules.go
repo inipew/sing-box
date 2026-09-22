@@ -9,9 +9,13 @@ import (
 	"github.com/go-chi/render"
 )
 
-func ruleRouter(router adapter.Router) http.Handler {
+type ruleLister interface {
+	Rules() []adapter.Rule
+}
+
+func ruleRouter(router ruleLister, dnsRouter adapter.DNSRuleInfoProvider) http.Handler {
 	r := chi.NewRouter()
-	r.Get("/", getRules(router))
+	r.Get("/", getRules(router, dnsRouter))
 	return r
 }
 
@@ -21,12 +25,19 @@ type Rule struct {
 	Proxy   string `json:"proxy"`
 }
 
-func getRules(router adapter.Router) func(w http.ResponseWriter, r *http.Request) {
+func getRules(router ruleLister, dnsRouter adapter.DNSRuleInfoProvider) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rawRules := router.Rules()
-
 		var rules []Rule
-		for _, rule := range rawRules {
+		if dnsRouter != nil {
+			for _, rule := range dnsRouter.DNSRuleInfo() {
+				rules = append(rules, Rule{
+					Type:    rule.Type,
+					Payload: rule.Payload,
+					Proxy:   rule.Action,
+				})
+			}
+		}
+		for _, rule := range router.Rules() {
 			rules = append(rules, Rule{
 				Type:    rule.Type(),
 				Payload: rule.String(),
