@@ -79,13 +79,12 @@ type LinkDomain struct {
 func (t *resolve1Manager) getLink(ifIndex int32) (*TransportLink, *dbus.Error) {
 	link, loaded := t.links[ifIndex]
 	if !loaded {
-		link = &TransportLink{}
-		t.links[ifIndex] = link
 		iif, err := t.network.InterfaceFinder().ByIndex(int(ifIndex))
 		if err != nil {
 			return nil, wrapError(err)
 		}
-		link.iif = iif
+		link = &TransportLink{iif: iif}
+		t.links[ifIndex] = link
 	}
 	return link, nil
 }
