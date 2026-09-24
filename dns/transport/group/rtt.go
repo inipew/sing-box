@@ -206,8 +206,8 @@ func (e *defaultRTTEstimator) Sorted(tags []string) []string {
 	sort.SliceStable(snaps, func(i, j int) bool {
 		a, b := snaps[i], snaps[j]
 		// Servers with too many consecutive failures sink to the bottom.
-		aFailed := a.failures >= 3
-		bFailed := b.failures >= 3
+		aFailed := a.failures >= e.failureThreshold
+		bFailed := b.failures >= e.failureThreshold
 		if aFailed != bFailed {
 			return !aFailed
 		}

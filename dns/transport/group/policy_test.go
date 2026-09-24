@@ -96,3 +96,12 @@ func TestAvailableTagsSkipsOpenCircuitUnlessAllAreOpen(t *testing.T) {
 	estimator.RecordFailure("healthy")
 	require.Equal(t, []string{"open", "healthy"}, availableTags([]string{"open", "healthy"}, estimator))
 }
+
+func TestRTTSortUsesConfiguredFailureThreshold(t *testing.T) {
+	estimator := newDefaultRTTEstimator(4, 1, 30*time.Second, 5*time.Minute, time.Now)
+	estimator.Record("healthy", 100*time.Millisecond)
+	estimator.Record("failed", time.Millisecond)
+	estimator.RecordFailure("failed")
+
+	require.Equal(t, []string{"healthy", "failed"}, estimator.Sorted([]string{"failed", "healthy"}))
+}

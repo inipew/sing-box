@@ -13,6 +13,11 @@ import (
 
 type checkedClientTestTransport struct{}
 
+type checkedClientRejectedError struct{}
+
+func (checkedClientRejectedError) Error() string        { return "composite response rejected: REFUSED" }
+func (checkedClientRejectedError) DNSResponseRejected() {}
+
 func (*checkedClientTestTransport) Type() string                   { return "checked" }
 func (*checkedClientTestTransport) Tag() string                    { return "checked" }
 func (*checkedClientTestTransport) Dependencies() []string         { return nil }
@@ -29,9 +34,20 @@ func (*checkedClientTestTransport) ExchangeWithResponseCheck(_ context.Context, 
 	response := new(mDNS.Msg)
 	response.SetReply(message)
 	if checker != nil && !checker(response) {
-		return nil, ErrResponseRejected
+		return nil, checkedClientRejectedError{}
 	}
 	return response, nil
+}
+
+func TestClientMapsCompositeRejectionToStandardError(t *testing.T) {
+	client := NewClient(ClientOptions{Context: context.Background(), DisableCache: true})
+	message := new(mDNS.Msg)
+	message.SetQuestion("example.com.", mDNS.TypeA)
+
+	_, err := client.Exchange(context.Background(), &checkedClientTestTransport{}, message, adapter.DNSQueryOptions{}, func(*mDNS.Msg) bool {
+		return false
+	})
+	require.ErrorIs(t, err, ErrResponseRejected)
 }
 
 func TestClientCallsCompositeResponseCheckerOnce(t *testing.T) {
