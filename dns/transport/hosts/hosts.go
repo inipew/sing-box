@@ -30,6 +30,8 @@ type Transport struct {
 	predefined map[string][]netip.Addr
 }
 
+func (*Transport) Networkless() {}
+
 func NewTransport(ctx context.Context, logger log.ContextLogger, tag string, options option.HostsDNSServerOptions) (adapter.DNSTransport, error) {
 	var (
 		files      []*File

@@ -16,6 +16,17 @@ type RTTSnapshot struct {
 	Failures      int
 	TotalFailures int
 	LastQueryTime time.Time
+	SuccessRate   float64
+	TotalAttempts uint64
+	State         string
+	CircuitUntil  time.Time
+	LastSuccess   time.Time
+	LastFailure   time.Time
+	Selected      uint64
+	Won           uint64
+	Inflight      int
+	ProbeAttempts uint64
+	ProbeFailures uint64
 }
 
 // RTTEstimator tracks exponentially-weighted moving-average RTT for member transports.
@@ -25,6 +36,9 @@ type RTTEstimator interface {
 
 	// RecordFailure increments the consecutive failure counter for the given tag.
 	RecordFailure(tag string)
+	Begin(tag string)
+	End(tag string)
+	RecordProbe(tag string, rtt time.Duration, err error)
 
 	// Sorted returns a copy of tags sorted by ascending EWMA RTT.
 	Sorted(tags []string) []string
@@ -48,5 +62,5 @@ type Strategy interface {
 // Dispatcher executes DNS queries using a specific distribution method (e.g. Sequential, Concurrent).
 type Dispatcher interface {
 	// Dispatch sends the DNS message to the selected transports according to the mode.
-	Dispatch(ctx context.Context, message *mDNS.Msg, selected []string, byTag map[string]adapter.DNSTransport, rtt RTTEstimator) (*mDNS.Msg, error)
+	Dispatch(ctx context.Context, message *mDNS.Msg, selected []string, byTag map[string]adapter.DNSTransport, rtt RTTEstimator, checker adapter.DNSResponseChecker) (*mDNS.Msg, error)
 }
