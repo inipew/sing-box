@@ -3,6 +3,7 @@ package group
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,20 +27,22 @@ const (
 // HealthChecker runs periodic active probes to all member transports and
 // records RTT results into the shared RTTEstimator.
 type HealthChecker struct {
-	members  []adapter.DNSTransport
-	interval time.Duration
-	timeout  time.Duration
-	rtt      RTTEstimator
-	logger   log.ContextLogger
-	ctx      context.Context
-	cancel   context.CancelFunc
-	waiter   sync.WaitGroup
+	members   []adapter.DNSTransport
+	interval  time.Duration
+	timeout   time.Duration
+	rtt       RTTEstimator
+	logger    log.ContextLogger
+	ctx       context.Context
+	cancel    context.CancelFunc
+	waiter    sync.WaitGroup
+	queryName string
+	queryType uint16
 }
 
 func NewHealthChecker(
 	parentCtx context.Context,
 	members []adapter.DNSTransport,
-	opts *option.DNSGroupHealthCheckOptions,
+	opts *option.DNSGroupActiveProbeOptions,
 	rtt RTTEstimator,
 	logger log.ContextLogger,
 ) *HealthChecker {
@@ -52,14 +55,26 @@ func NewHealthChecker(
 		timeout = defaultHealthCheckTimeout
 	}
 	ctx, cancel := context.WithCancel(parentCtx)
+	queryName := opts.Name
+	if queryName == "" {
+		queryName = healthCheckQuery
+	}
+	queryType := mDNS.TypeNS
+	if opts.Type != "" {
+		if parsedType, loaded := mDNS.StringToType[strings.ToUpper(opts.Type)]; loaded {
+			queryType = parsedType
+		}
+	}
 	return &HealthChecker{
-		members:  members,
-		interval: interval,
-		timeout:  timeout,
-		rtt:      rtt,
-		logger:   logger,
-		ctx:      ctx,
-		cancel:   cancel,
+		members:   members,
+		interval:  interval,
+		timeout:   timeout,
+		rtt:       rtt,
+		logger:    logger,
+		ctx:       ctx,
+		cancel:    cancel,
+		queryName: mDNS.Fqdn(queryName),
+		queryType: queryType,
 	}
 }
 
@@ -133,8 +148,8 @@ func (h *HealthChecker) probe(transport adapter.DNSTransport) {
 			RecursionDesired: true,
 		},
 		Question: []mDNS.Question{{
-			Name:   healthCheckQuery,
-			Qtype:  mDNS.TypeNS,
+			Name:   h.queryName,
+			Qtype:  h.queryType,
 			Qclass: mDNS.ClassINET,
 		}},
 	}
@@ -144,16 +159,19 @@ func (h *HealthChecker) probe(transport adapter.DNSTransport) {
 
 	tag := transport.Tag()
 	start := time.Now()
-	_, err := transport.Exchange(probeCtx, msg)
+	response, err := transport.Exchange(probeCtx, msg)
 	elapsed := time.Since(start)
 
+	if err == nil && !acceptableResponse(msg, response, nil, map[int]bool{mDNS.RcodeServerFailure: true, mDNS.RcodeRefused: true}) {
+		err = errors.New("unacceptable DNS probe response")
+	}
 	if err != nil {
+		h.rtt.RecordProbe(tag, elapsed, err)
 		if !errors.Is(err, context.Canceled) {
-			h.rtt.RecordFailure(tag)
 			h.logger.Debug("dns health check [", tag, "] failed: ", err)
 		}
 		return
 	}
-	h.rtt.Record(tag, elapsed)
+	h.rtt.RecordProbe(tag, elapsed, nil)
 	h.logger.Debug("dns health check [", tag, "] ok: ", elapsed.Milliseconds(), "ms")
 }
