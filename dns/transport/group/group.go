@@ -2,8 +2,6 @@ package group
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,7 +25,8 @@ const (
 
 var (
 	_ adapter.DNSTransport                   = (*GroupTransport)(nil)
-	_ adapter.DNSTransportWithStats          = (*GroupTransport)(nil)
+	_ adapter.DNSTransportWithResponseCheck  = (*GroupTransport)(nil)
+	_ adapter.DNSGroupSnapshotProvider       = (*GroupTransport)(nil)
 	_ adapter.DNSTransportWithDialerOverride = (*GroupTransport)(nil)
 	_ adapter.IdleConnectionKeeper           = (*GroupTransport)(nil)
 	_ adapter.Referrer                       = (*GroupTransport)(nil)
@@ -46,7 +45,8 @@ type GroupTransport struct {
 	maxRetries    int
 	detour        string // optional: outbound tag to force for all member transports
 	customDialer  N.Dialer
-	hcOptions     *option.DNSGroupHealthCheckOptions
+	policy        compiledPolicy
+	hcOptions     *option.DNSGroupActiveProbeOptions
 
 	lifecycleAccess sync.Mutex
 	runtime         atomic.Pointer[groupRuntime]
@@ -98,37 +98,23 @@ func NewGroupTransport(ctx context.Context, logger log.ContextLogger, tag string
 	if len(options.Servers) == 0 {
 		return nil, E.New("dns group[", tag, "]: no member servers specified")
 	}
-
-	modeStr := strings.ToLower(options.Mode)
-	switch modeStr {
-	case "", "sequential":
-		modeStr = "sequential"
-	case "concurrent":
-	case "fallback":
-	default:
-		return nil, fmt.Errorf("dns group[%s]: unknown mode %q (valid: sequential, concurrent, fallback)", tag, options.Mode)
+	seenMembers := make(map[string]struct{}, len(options.Servers))
+	for _, memberTag := range options.Servers {
+		if memberTag == tag {
+			return nil, E.New("dns group[", tag, "]: group cannot contain itself")
+		}
+		if _, loaded := seenMembers[memberTag]; loaded {
+			return nil, E.New("dns group[", tag, "]: duplicate member tag: ", memberTag)
+		}
+		seenMembers[memberTag] = struct{}{}
 	}
 
-	// Validate strategy early; actual instance is created in Start().
-	strategyName := options.Strategy
-	if strategyName == "" {
-		strategyName = "wp2"
-	}
-	if _, err := NewStrategy(strategyName); err != nil {
+	policy, err := compilePolicy(len(options.Servers), options)
+	if err != nil {
 		return nil, E.Cause(err, "dns group[", tag, "]")
 	}
-
-	// Fallback delay.
-	fd := time.Duration(options.FallbackDelay)
-	if fd == 0 {
-		fd = defaultFallbackDelay
-	}
-
-	// RTT sample size from health_check options.
-	sampleSize := 0
-	if options.HealthCheck != nil {
-		sampleSize = options.HealthCheck.SampleSize
-	}
+	strategyName := string(policy.selection)
+	modeStr := string(policy.execution)
 
 	return &GroupTransport{
 		ctx:           ctx,
@@ -137,11 +123,12 @@ func NewGroupTransport(ctx context.Context, logger log.ContextLogger, tag string
 		memberTags:    options.Servers,
 		strategyName:  strategyName,
 		modeStr:       modeStr,
-		fallbackDelay: fd,
-		maxRetries:    options.MaxRetries,
+		fallbackDelay: policy.hedgeDelay,
+		maxRetries:    policy.maxAttempts,
 		detour:        options.Detour,
-		hcOptions:     options.HealthCheck,
-		rtt:           newRTTEstimator(sampleSize),
+		policy:        policy,
+		hcOptions:     policy.activeProbe,
+		rtt:           newDefaultRTTEstimator(policy.windowSize, policy.failureThreshold, policy.cooldown, policy.maxCooldown, time.Now),
 	}, nil
 }
 
@@ -217,22 +204,28 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 		if !loaded {
 			return E.New("dns group[", t.tag, "]: member transport not found: ", memberTag)
 		}
+		if transport.Type() == C.DNSTypeGroup {
+			return E.New("dns group[", t.tag, "]: nested group member is not supported: ", memberTag)
+		}
+		if transport.Type() == C.DNSTypeFakeIP {
+			return E.New("dns group[", t.tag, "]: fakeip member is not supported: ", memberTag)
+		}
 		members = append(members, transport)
 	}
 
-	strategy, err := NewStrategy(t.strategyName)
+	strategy, err := newSelectionStrategy(t.policy.selection)
 	if err != nil {
 		return E.Cause(err, "dns group[", t.tag, "]")
 	}
 
 	var dispatcher Dispatcher
 	switch t.modeStr {
-	case "concurrent":
-		dispatcher = &ConcurrentDispatcher{Tag: t.tag, Logger: t.logger, MaxRetries: t.maxRetries}
-	case "fallback":
-		dispatcher = &FallbackDispatcher{Tag: t.tag, Logger: t.logger, FallbackDelay: t.fallbackDelay, MaxRetries: t.maxRetries}
+	case string(executionParallel):
+		dispatcher = &ConcurrentDispatcher{Tag: t.tag, Logger: t.logger, MaxRetries: t.maxRetries, MaxInflight: t.policy.maxInflight, RetryRCodes: t.policy.retryRCodes}
+	case string(executionHedge):
+		dispatcher = &FallbackDispatcher{Tag: t.tag, Logger: t.logger, FallbackDelay: t.fallbackDelay, MaxRetries: t.maxRetries, MaxInflight: t.policy.maxInflight, RetryRCodes: t.policy.retryRCodes}
 	default:
-		dispatcher = &SequentialDispatcher{Tag: t.tag, Logger: t.logger, MaxRetries: t.maxRetries}
+		dispatcher = &SequentialDispatcher{Tag: t.tag, Logger: t.logger, MaxRetries: t.maxRetries, RetryRCodes: t.policy.retryRCodes}
 	}
 
 	var overrideDialer N.Dialer
@@ -280,7 +273,7 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 		}
 		runtime.byTag[member.Tag()] = member
 	}
-	if t.hcOptions != nil {
+	if t.hcOptions != nil && t.hcOptions.Enabled {
 		runtime.health = NewHealthChecker(runtimeCtx, members, t.hcOptions, t.rtt, t.logger)
 	}
 	t.runtime.Store(runtime)
@@ -326,8 +319,14 @@ func (t *GroupTransport) wrapMembersWithDialer(members []adapter.DNSTransport, o
 			clonedMembers = append(clonedMembers, cloned)
 			t.logger.Debug("dns group[", t.tag, "] dialer override applied to member: ", m.Tag())
 		} else {
+			if _, networkless := m.(adapter.DNSTransportNetworkless); !networkless {
+				for _, clonedMember := range clonedMembers {
+					_ = clonedMember.Close()
+				}
+				return nil, nil, E.New("member ", m.Tag(), " does not support group detour override")
+			}
 			effective[i] = m
-			t.logger.Debug("dns group[", t.tag, "] member ", m.Tag(), " does not support dialer override, using as-is")
+			t.logger.Debug("dns group[", t.tag, "] networkless member ", m.Tag(), " is unaffected by detour")
 		}
 	}
 	return effective, clonedMembers, nil
@@ -365,10 +364,6 @@ func (t *GroupTransport) RawDialer() N.Dialer {
 }
 
 func (t *GroupTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
-	sampleSize := 0
-	if t.hcOptions != nil {
-		sampleSize = t.hcOptions.SampleSize
-	}
 	return &GroupTransport{
 		ctx:           t.ctx,
 		tag:           t.tag,
@@ -379,12 +374,17 @@ func (t *GroupTransport) WithDialer(d N.Dialer) adapter.DNSTransport {
 		fallbackDelay: t.fallbackDelay,
 		maxRetries:    t.maxRetries,
 		customDialer:  d,
+		policy:        t.policy,
 		hcOptions:     t.hcOptions,
-		rtt:           newRTTEstimator(sampleSize),
+		rtt:           newDefaultRTTEstimator(t.policy.windowSize, t.policy.failureThreshold, t.policy.cooldown, t.policy.maxCooldown, time.Now),
 	}
 }
 
 func (t *GroupTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
+	return t.ExchangeWithResponseCheck(ctx, message, nil)
+}
+
+func (t *GroupTransport) ExchangeWithResponseCheck(ctx context.Context, message *mDNS.Msg, checker adapter.DNSResponseChecker) (*mDNS.Msg, error) {
 	runtime := t.runtime.Load()
 	if runtime == nil || !runtime.acquire() {
 		return nil, E.New("dns group[", t.tag, "]: not started")
@@ -397,6 +397,7 @@ func (t *GroupTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS
 	for i, m := range runtime.members {
 		tags[i] = m.Tag()
 	}
+	tags = availableTags(tags, t.rtt)
 	selected := runtime.strategy.Select(tags, t.rtt)
 	if len(selected) == 0 {
 		return nil, E.New("dns group[", t.tag, "]: strategy returned no servers")
@@ -408,7 +409,21 @@ func (t *GroupTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS
 		stopRuntimeCancel()
 		cancelQuery()
 	}()
-	return runtime.dispatcher.Dispatch(queryCtx, message, selected, runtime.byTag, t.rtt)
+	return runtime.dispatcher.Dispatch(queryCtx, message, selected, runtime.byTag, t.rtt, checker)
+}
+
+func availableTags(tags []string, estimator RTTEstimator) []string {
+	snapshots := estimator.AllSnapshots()
+	available := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if snapshot, loaded := snapshots[tag]; !loaded || snapshot.State != "open" {
+			available = append(available, tag)
+		}
+	}
+	if len(available) == 0 {
+		return tags
+	}
+	return available
 }
 
 func (t *GroupTransport) ExchangeAsync(ctx context.Context, message *mDNS.Msg, callback func(response *mDNS.Msg, err error)) {
@@ -417,27 +432,48 @@ func (t *GroupTransport) ExchangeAsync(ctx context.Context, message *mDNS.Msg, c
 	}()
 }
 
-func (t *GroupTransport) Stats() []adapter.DNSTransportMemberStats {
+func (t *GroupTransport) GroupSnapshot() adapter.DNSGroupSnapshot {
+	result := adapter.DNSGroupSnapshot{
+		Tag:          t.tag,
+		Policy:       t.policy.name,
+		Selection:    string(t.policy.selection),
+		Execution:    string(t.policy.execution),
+		MaxAttempts:  t.policy.maxAttempts,
+		MaxInflight:  t.policy.maxInflight,
+		HedgeDelayMs: t.policy.hedgeDelay.Milliseconds(),
+	}
 	runtime := t.runtime.Load()
 	if runtime == nil {
-		return nil
+		return result
 	}
 	snapshots := t.rtt.AllSnapshots()
 	members := runtime.members
-	stats := make([]adapter.DNSTransportMemberStats, len(members))
+	result.Members = make([]adapter.DNSGroupMemberSnapshot, len(members))
 	for i, m := range members {
 		entry, ok := snapshots[m.Tag()]
 		if ok {
-			stats[i] = adapter.DNSTransportMemberStats{
-				Tag:           m.Tag(),
-				AverageRTTMs:  entry.EWMA,
-				JitterMs:      entry.Jitter,
-				Failures:      entry.TotalFailures,
-				LastQueryTime: entry.LastQueryTime,
+			result.Members[i] = adapter.DNSGroupMemberSnapshot{
+				Tag:                 m.Tag(),
+				State:               entry.State,
+				AverageRTTMs:        entry.EWMA,
+				JitterMs:            entry.Jitter,
+				ConsecutiveFailures: entry.Failures,
+				TotalFailures:       uint64(entry.TotalFailures),
+				TotalAttempts:       entry.TotalAttempts,
+				SuccessRate:         entry.SuccessRate,
+				LastAttempt:         entry.LastQueryTime,
+				LastSuccess:         entry.LastSuccess,
+				LastFailure:         entry.LastFailure,
+				CircuitUntil:        entry.CircuitUntil,
+				Selected:            entry.Selected,
+				Won:                 entry.Won,
+				Inflight:            entry.Inflight,
+				ProbeAttempts:       entry.ProbeAttempts,
+				ProbeFailures:       entry.ProbeFailures,
 			}
 		} else {
-			stats[i] = adapter.DNSTransportMemberStats{Tag: m.Tag()}
+			result.Members[i] = adapter.DNSGroupMemberSnapshot{Tag: m.Tag(), State: "closed"}
 		}
 	}
-	return stats
+	return result
 }
