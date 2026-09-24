@@ -46,6 +46,7 @@ type Server struct {
 	network        adapter.NetworkManager
 	router         adapter.Router
 	dnsRouter      adapter.DNSRouter
+	dnsTransport   adapter.DNSTransportManager
 	outbound       adapter.OutboundManager
 	endpoint       adapter.EndpointManager
 	logger         log.Logger
@@ -90,13 +91,14 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		updateInterval = time.Hour
 	}
 	s := &Server{
-		ctx:       ctx,
-		network:   service.FromContext[adapter.NetworkManager](ctx),
-		router:    service.FromContext[adapter.Router](ctx),
-		dnsRouter: service.FromContext[adapter.DNSRouter](ctx),
-		outbound:  service.FromContext[adapter.OutboundManager](ctx),
-		endpoint:  service.FromContext[adapter.EndpointManager](ctx),
-		logger:    logFactory.NewLogger("clash-api"),
+		ctx:          ctx,
+		network:      service.FromContext[adapter.NetworkManager](ctx),
+		router:       service.FromContext[adapter.Router](ctx),
+		dnsRouter:    service.FromContext[adapter.DNSRouter](ctx),
+		dnsTransport: service.FromContext[adapter.DNSTransportManager](ctx),
+		outbound:     service.FromContext[adapter.OutboundManager](ctx),
+		endpoint:     service.FromContext[adapter.EndpointManager](ctx),
+		logger:       logFactory.NewLogger("clash-api"),
 		httpServer: &http.Server{
 			Addr:    options.ExternalController,
 			Handler: chiRouter,
@@ -149,6 +151,7 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		r.Mount("/script", scriptRouter())
 		r.Mount("/profile", profileRouter())
 		r.Mount("/cache", cacheRouter(ctx))
+		r.Mount("/dns/groups", dnsGroupRouter(s.dnsTransport))
 		r.Mount("/dns", dnsRouter(s.dnsRouter))
 
 		if service.FromContext[adapter.PlatformInterface](ctx) == nil {

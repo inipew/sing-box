@@ -1501,3 +1501,17 @@ which will disrupt the existing `process_path` use cases in Windows.
       }
     }
     ```
+### Migrate DNS group policies
+
+Legacy DNS group fields are no longer accepted. Replace common configurations as follows:
+
+| Legacy configuration | Replacement |
+|----------------------|-------------|
+| `mode: sequential` | `policy: privacy` or `advanced.execution: failover` |
+| `mode: fallback` | `policy: reliable` or `advanced.execution: hedge` |
+| `mode: concurrent` | `policy: low_latency` or `advanced.execution: parallel` |
+| `max_retries` | `advanced.max_attempts` |
+| `fallback_delay` | `advanced.hedge_delay` |
+| `health_check` | `advanced.health.active_probe` |
+
+Selection strategies map to `advanced.selection`: `first` becomes `adaptive`, while `random` and `round_robin` keep their names. The former `wp2`, `weighted`, and `epsilon_greedy` values are replaced by the documented `adaptive` scorer.
