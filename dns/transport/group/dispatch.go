@@ -39,12 +39,12 @@ func (d *SequentialDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, 
 		start := time.Now()
 		resp, err := transport.Exchange(ctx, message.Copy())
 		rtt.End(tag)
-		if err == nil && acceptableResponse(message, resp, checker, d.RetryRCodes) {
-			rtt.Record(tag, time.Since(start))
-			return resp, nil
-		}
 		if err == nil {
-			err = E.New("response rejected")
+			err = responseRejection(message, resp, checker, d.RetryRCodes)
+			if err == nil {
+				rtt.Record(tag, time.Since(start))
+				return resp, nil
+			}
 		}
 		if !errors.Is(err, context.Canceled) {
 			rtt.RecordFailure(tag)
@@ -121,13 +121,13 @@ func (d *ConcurrentDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, 
 		select {
 		case r := <-ch:
 			received++
-			if r.err == nil && acceptableResponse(message, r.resp, checker, d.RetryRCodes) {
-				rtt.Record(r.tag, r.rtt)
-				cancel() // signal remaining goroutines to stop
-				return r.resp, nil
-			}
 			if r.err == nil {
-				r.err = E.New("response rejected")
+				r.err = responseRejection(message, r.resp, checker, d.RetryRCodes)
+				if r.err == nil {
+					rtt.Record(r.tag, r.rtt)
+					cancel() // signal remaining goroutines to stop
+					return r.resp, nil
+				}
 			}
 			if !errors.Is(r.err, context.Canceled) {
 				rtt.RecordFailure(r.tag)
@@ -174,12 +174,12 @@ func (d *FallbackDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, se
 		start := time.Now()
 		resp, err := transport.Exchange(ctx, message.Copy())
 		rtt.End(selected[0])
-		if err == nil && acceptableResponse(message, resp, checker, d.RetryRCodes) {
-			rtt.Record(selected[0], time.Since(start))
-			return resp, nil
-		}
 		if err == nil {
-			err = E.New("response rejected")
+			err = responseRejection(message, resp, checker, d.RetryRCodes)
+			if err == nil {
+				rtt.Record(selected[0], time.Since(start))
+				return resp, nil
+			}
 		}
 		if !errors.Is(err, context.Canceled) {
 			rtt.RecordFailure(selected[0])
@@ -260,13 +260,13 @@ func (d *FallbackDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, se
 			launchFallbacks()
 		case r := <-ch:
 			received++
-			if r.err == nil && acceptableResponse(message, r.resp, checker, d.RetryRCodes) {
-				rtt.Record(r.tag, r.rtt)
-				cancel()
-				return r.resp, nil
-			}
 			if r.err == nil {
-				r.err = E.New("response rejected")
+				r.err = responseRejection(message, r.resp, checker, d.RetryRCodes)
+				if r.err == nil {
+					rtt.Record(r.tag, r.rtt)
+					cancel()
+					return r.resp, nil
+				}
 			}
 			if !errors.Is(r.err, context.Canceled) {
 				rtt.RecordFailure(r.tag)
@@ -291,15 +291,22 @@ func (d *FallbackDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, se
 
 func aggregateDispatchError(groupTag string, summary string, selected []string, attemptErrors map[string]error, fallback error) error {
 	parts := make([]string, 0, len(attemptErrors))
+	rejected := false
 	for _, tag := range selected {
 		if attemptErr, loaded := attemptErrors[tag]; loaded {
 			parts = append(parts, fmt.Sprintf("%s: %v", tag, attemptErr))
+			var rejection adapter.DNSResponseRejectedError
+			rejected = rejected || errors.As(attemptErr, &rejection)
 		}
 	}
 	if len(parts) == 0 {
 		return E.Cause(fallback, "dns group[", groupTag, "]: ", summary)
 	}
-	return &groupDispatchError{message: fmt.Sprintf("dns group[%s]: %s (%s)", groupTag, summary, strings.Join(parts, "; ")), cause: fallback}
+	dispatchErr := &groupDispatchError{message: fmt.Sprintf("dns group[%s]: %s (%s)", groupTag, summary, strings.Join(parts, "; ")), cause: fallback}
+	if rejected {
+		return &responseRejectedDispatchError{groupDispatchError: dispatchErr}
+	}
+	return dispatchErr
 }
 
 type groupDispatchError struct {
@@ -310,20 +317,43 @@ type groupDispatchError struct {
 func (e *groupDispatchError) Error() string { return e.message }
 func (e *groupDispatchError) Unwrap() error { return e.cause }
 
+type responseRejectedDispatchError struct {
+	*groupDispatchError
+}
+
+func (e *responseRejectedDispatchError) DNSResponseRejected() {}
+
+type responseRejectedError struct {
+	reason string
+}
+
+func (e *responseRejectedError) Error() string        { return e.reason }
+func (e *responseRejectedError) DNSResponseRejected() {}
+
 func acceptableResponse(request *mDNS.Msg, response *mDNS.Msg, checker adapter.DNSResponseChecker, retryRCodes map[int]bool) bool {
-	if response == nil || len(response.Question) != len(request.Question) {
-		return false
+	return responseRejection(request, response, checker, retryRCodes) == nil
+}
+
+func responseRejection(request *mDNS.Msg, response *mDNS.Msg, checker adapter.DNSResponseChecker, retryRCodes map[int]bool) error {
+	reject := func(reason string) error { return &responseRejectedError{reason: reason} }
+	if response == nil {
+		return reject("nil DNS response")
+	}
+	if len(response.Question) != len(request.Question) {
+		return reject(fmt.Sprintf("DNS question count mismatch: expected %d, received %d", len(request.Question), len(response.Question)))
 	}
 	for index := range request.Question {
 		if response.Question[index] != request.Question[index] {
-			return false
+			return reject(fmt.Sprintf("DNS question mismatch at index %d", index))
 		}
 	}
 	if retryRCodes[response.Rcode] {
-		return false
+		return reject("retryable rcode " + mDNS.RcodeToString[response.Rcode])
 	}
 	if response.Rcode == mDNS.RcodeSuccess || response.Rcode == mDNS.RcodeNameError {
-		return checker == nil || checker(response)
+		if checker != nil && !checker(response) {
+			return reject("response rejected by DNS response checker")
+		}
 	}
-	return true
+	return nil
 }

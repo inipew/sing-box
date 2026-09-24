@@ -85,6 +85,18 @@ func TestGroupFailoverRetriesRejectedResponse(t *testing.T) {
 	require.EqualValues(t, 1, second.callCount.Load())
 }
 
+func TestGroupReportsPolicyRejectionWithReason(t *testing.T) {
+	refused := &fakeTransport{tag: "refused", rcode: mDNS.RcodeRefused}
+	tr := group.ExportNewGroupWithMembersOrdered(t, "test", "sequential", 0,
+		[]adapter.DNSTransport{refused})
+
+	_, err := tr.Exchange(context.Background(), makeMsg())
+	require.Error(t, err)
+	var rejected adapter.DNSResponseRejectedError
+	require.ErrorAs(t, err, &rejected)
+	require.ErrorContains(t, err, "retryable rcode REFUSED")
+}
+
 func makeMsg() *mDNS.Msg {
 	msg := new(mDNS.Msg)
 	msg.SetQuestion("example.com.", mDNS.TypeA)

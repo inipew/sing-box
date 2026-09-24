@@ -140,8 +140,8 @@ func (h *HealthChecker) probeAll() {
 }
 
 // probe sends a lightweight NS query for "." to the given transport and
-// records the RTT. NXDOMAIN / SERVFAIL still gives a valid RTT measurement;
-// only network-level errors are counted as failures.
+// records the RTT. Retryable RCODEs and malformed responses are counted as
+// failures in the same way as user traffic.
 func (h *HealthChecker) probe(transport adapter.DNSTransport) {
 	msg := &mDNS.Msg{
 		MsgHdr: mDNS.MsgHdr{
@@ -168,10 +168,10 @@ func (h *HealthChecker) probe(transport adapter.DNSTransport) {
 	if err != nil {
 		h.rtt.RecordProbe(tag, elapsed, err)
 		if !errors.Is(err, context.Canceled) {
-			h.logger.Debug("dns health check [", tag, "] failed: ", err)
+			h.logger.DebugContext(probeCtx, "dns group health[", tag, "] probe failed: ", err)
 		}
 		return
 	}
 	h.rtt.RecordProbe(tag, elapsed, nil)
-	h.logger.Debug("dns health check [", tag, "] ok: ", elapsed.Milliseconds(), "ms")
+	h.logger.DebugContext(probeCtx, "dns group health[", tag, "] probe succeeded: ", elapsed.Milliseconds(), "ms")
 }
