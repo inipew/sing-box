@@ -266,10 +266,7 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 	for _, member := range members {
 		if _, exists := runtime.byTag[member.Tag()]; exists {
 			cancelRuntime()
-			for _, owned := range clonedMembers {
-				_ = owned.Close()
-			}
-			return E.New("dns group[", t.tag, "]: duplicate member tag: ", member.Tag())
+			return closeOwnedTransports(E.New("dns group[", t.tag, "]: duplicate member tag: ", member.Tag()), clonedMembers)
 		}
 		runtime.byTag[member.Tag()] = member
 	}
@@ -285,7 +282,7 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 	if t.detour != "" {
 		detourInfo = ", detour=" + t.detour
 	}
-	t.logger.Info("dns group [", t.tag, "] started with ", len(members),
+	t.logger.Info("dns group[", t.tag, "] started with ", len(members),
 		" members, strategy=", t.strategyName, ", mode=", t.modeStr, detourInfo)
 	return nil
 }
@@ -309,21 +306,14 @@ func (t *GroupTransport) wrapMembersWithDialer(members []adapter.DNSTransport, o
 
 			cloned := overridable.WithDialer(overrideDialer)
 			if err := cloned.Start(adapter.StartStateStart); err != nil {
-				// Prevent leak: close previously started clones
-				for _, c := range clonedMembers {
-					c.Close()
-				}
-				return nil, nil, E.Cause(err, "start cloned transport ", m.Tag())
+				return nil, nil, closeOwnedTransports(E.Cause(err, "start cloned transport ", m.Tag()), clonedMembers)
 			}
 			effective[i] = cloned
 			clonedMembers = append(clonedMembers, cloned)
 			t.logger.Debug("dns group[", t.tag, "] dialer override applied to member: ", m.Tag())
 		} else {
 			if _, networkless := m.(adapter.DNSTransportNetworkless); !networkless {
-				for _, clonedMember := range clonedMembers {
-					_ = clonedMember.Close()
-				}
-				return nil, nil, E.New("member ", m.Tag(), " does not support group detour override")
+				return nil, nil, closeOwnedTransports(E.New("member ", m.Tag(), " does not support group detour override"), clonedMembers)
 			}
 			effective[i] = m
 			t.logger.Debug("dns group[", t.tag, "] networkless member ", m.Tag(), " is unaffected by detour")
@@ -344,10 +334,13 @@ func (t *GroupTransport) Close() error {
 		runtime.health.Close()
 	}
 	runtime.waiter.Wait()
-	var err error
-	for _, m := range runtime.owned {
-		err = E.Append(err, m.Close(), func(closeErr error) error {
-			return E.Cause(closeErr, "close cloned DNS transport ", m.Tag())
+	return closeOwnedTransports(nil, runtime.owned)
+}
+
+func closeOwnedTransports(err error, transports []adapter.DNSTransport) error {
+	for _, transport := range transports {
+		err = E.Append(err, transport.Close(), func(closeErr error) error {
+			return E.Cause(closeErr, "close cloned DNS transport ", transport.Tag())
 		})
 	}
 	return err
