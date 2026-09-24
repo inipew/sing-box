@@ -72,6 +72,13 @@ type DNSTransport interface {
 
 type DNSResponseChecker func(response *dns.Msg) bool
 
+// DNSResponseRejectedError marks an exchange error caused by a DNS response
+// that was received successfully but rejected by response policy.
+type DNSResponseRejectedError interface {
+	error
+	DNSResponseRejected()
+}
+
 // DNSTransportWithResponseCheck lets a composite transport retry another
 // member before returning a response that the DNS router would reject.
 type DNSTransportWithResponseCheck interface {
