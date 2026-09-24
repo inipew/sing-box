@@ -770,6 +770,10 @@ func (c *Client) exchangeToTransport(ctx context.Context, transport adapter.DNST
 		stripDNSPadding(response)
 		return response, nil
 	}
+	var responseRejected adapter.DNSResponseRejectedError
+	if errors.As(err, &responseRejected) {
+		return nil, E.Cause(ErrResponseRejected, err.Error())
+	}
 	var rcodeError RcodeError
 	if errors.As(err, &rcodeError) {
 		return FixedResponseStatus(message, int(rcodeError)), nil
@@ -794,6 +798,11 @@ func finishTransportExchange(message *dns.Msg, response *dns.Msg, err error, cal
 	if err == nil {
 		stripDNSPadding(response)
 		callback(response, nil)
+		return
+	}
+	var responseRejected adapter.DNSResponseRejectedError
+	if errors.As(err, &responseRejected) {
+		callback(nil, E.Cause(ErrResponseRejected, err.Error()))
 		return
 	}
 	var rcodeError RcodeError
