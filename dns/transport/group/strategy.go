@@ -39,19 +39,32 @@ func (s strategyWP2) Select(tags []string, rtt RTTEstimator) []string {
 		return []string{tags[0]}
 	}
 	sorted := rtt.Sorted(tags)
+	eligible := make([]string, 0, len(sorted))
+	snapshots := rtt.AllSnapshots()
+	for _, tag := range sorted {
+		if snapshot, loaded := snapshots[tag]; !loaded || snapshot.State != "open" {
+			eligible = append(eligible, tag)
+		}
+	}
+	if len(eligible) == 0 {
+		eligible = sorted
+	}
+	if len(eligible) == 1 {
+		return appendRemaining([]string{eligible[0]}, sorted)
+	}
 
 	// Pick 2 distinct random indices from the sorted list.
-	i := rand.IntN(len(sorted))
-	j := rand.IntN(len(sorted) - 1)
+	i := rand.IntN(len(eligible))
+	j := rand.IntN(len(eligible) - 1)
 	if j >= i {
 		j++
 	}
 	// Prefer the one with lower RTT index (better latency).
 	var primary, secondary string
 	if i < j {
-		primary, secondary = sorted[i], sorted[j]
+		primary, secondary = eligible[i], eligible[j]
 	} else {
-		primary, secondary = sorted[j], sorted[i]
+		primary, secondary = eligible[j], eligible[i]
 	}
 	result := make([]string, 0, len(sorted))
 	result = append(result, primary, secondary)
@@ -103,7 +116,7 @@ func (s *strategyRoundRobin) Select(tags []string, rtt RTTEstimator) []string {
 	}
 	// Use uint64 modulo before converting to int to prevent negative-index
 	// panic on counter overflow (uint64 wraps → int64(-1) → -1 % n = -1).
-	idx := int(s.counter.Add(1) % uint64(len(tags)))
+	idx := int((s.counter.Add(1) - 1) % uint64(len(tags)))
 	sorted := rtt.Sorted(tags)
 	result := make([]string, 0, len(sorted))
 	result = append(result, tags[idx])
@@ -234,4 +247,27 @@ func NewStrategy(name string) (Strategy, error) {
 	default:
 		return nil, fmt.Errorf("unknown dns group strategy: %q (valid: wp2, first, random, round_robin, weighted, epsilon_greedy)", name)
 	}
+}
+
+func newSelectionStrategy(mode selectionMode) (Strategy, error) {
+	switch mode {
+	case selectionAdaptive:
+		return strategyWP2{}, nil
+	case selectionOrdered:
+		return strategyDeclaredOrder{}, nil
+	case selectionRandom:
+		return strategyRandom{}, nil
+	case selectionRoundRobin:
+		return &strategyRoundRobin{}, nil
+	default:
+		return nil, fmt.Errorf("unknown DNS group selection: %s", mode)
+	}
+}
+
+type strategyDeclaredOrder struct{}
+
+func (strategyDeclaredOrder) Name() string { return "ordered" }
+
+func (strategyDeclaredOrder) Select(tags []string, _ RTTEstimator) []string {
+	return append([]string(nil), tags...)
 }

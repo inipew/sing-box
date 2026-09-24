@@ -237,36 +237,70 @@ type GroupDNSServerOptions struct {
 	// groups that route through different proxies.
 	Detour string `json:"detour,omitempty"`
 
-	// Strategy controls which server(s) are selected for each query.
-	// Values: "first", "random", "round_robin", "weighted", "epsilon_greedy", "wp2" (default).
-	Strategy string `json:"strategy,omitempty"`
+	// Policy selects a safe preset. Values: reliable (default), low_latency, privacy.
+	Policy string `json:"policy,omitempty"`
 
-	// Mode controls how queries are dispatched to selected servers.
-	// Values: "sequential" (default), "concurrent", "fallback".
-	Mode string `json:"mode,omitempty"`
-
-	// FallbackDelay is the delay before promoting fallback servers in "fallback" mode.
-	// Default: 300ms (happy-eyeballs style).
-	FallbackDelay badoption.Duration `json:"fallback_delay,omitempty"`
-
-	// MaxRetries is the maximum number of servers to try or race across all modes.
-	// In "sequential", it's the maximum number of servers to try.
-	// In "concurrent", it's the maximum number of servers to race simultaneously.
-	// In "fallback", it's the maximum number of servers to try (1 primary + fallbacks).
-	// 0 means try all servers.
-	MaxRetries int `json:"max_retries,omitempty"`
-
-	// HealthCheck configures active latency probing.
-	// When omitted, only passive RTT measurement from real queries is used.
-	HealthCheck *DNSGroupHealthCheckOptions `json:"health_check,omitempty"`
+	// Advanced overrides individual parts of the selected preset.
+	Advanced *DNSGroupAdvancedOptions `json:"advanced,omitempty"`
 }
 
-// DNSGroupHealthCheckOptions configures active latency probing for group members.
-type DNSGroupHealthCheckOptions struct {
-	// Interval between health-check probes. Default: 10m.
+type DNSGroupAdvancedOptions struct {
+	Selection   string                `json:"selection,omitempty"`
+	Execution   string                `json:"execution,omitempty"`
+	MaxAttempts int                   `json:"max_attempts,omitempty"`
+	MaxInflight int                   `json:"max_inflight,omitempty"`
+	HedgeDelay  badoption.Duration    `json:"hedge_delay,omitempty"`
+	RetryRCodes []string              `json:"retry_rcodes,omitempty"`
+	Health      DNSGroupHealthOptions `json:"health,omitempty"`
+}
+
+type DNSGroupHealthOptions struct {
+	WindowSize       int                         `json:"window_size,omitempty"`
+	FailureThreshold int                         `json:"failure_threshold,omitempty"`
+	Cooldown         badoption.Duration          `json:"cooldown,omitempty"`
+	MaxCooldown      badoption.Duration          `json:"max_cooldown,omitempty"`
+	ActiveProbe      *DNSGroupActiveProbeOptions `json:"active_probe,omitempty"`
+}
+
+type DNSGroupActiveProbeOptions struct {
+	Enabled  bool               `json:"enabled,omitempty"`
 	Interval badoption.Duration `json:"interval,omitempty"`
-	// Timeout for each probe. Default: 5s.
-	Timeout badoption.Duration `json:"timeout,omitempty"`
-	// SampleSize is the number of recent RTT samples used for EWMA. Default: 10.
-	SampleSize int `json:"sample_size,omitempty"`
+	Timeout  badoption.Duration `json:"timeout,omitempty"`
+	Name     string             `json:"name,omitempty"`
+	Type     string             `json:"type,omitempty"`
+}
+
+func (o *GroupDNSServerOptions) UnmarshalJSON(content []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(content, &fields); err != nil {
+		return err
+	}
+	for _, field := range []string{"strategy", "mode", "fallback_delay", "max_retries", "health_check"} {
+		if _, loaded := fields[field]; loaded {
+			return E.New("legacy DNS group field `", field, "` has been removed; use `policy` and `advanced` instead")
+		}
+	}
+	type plain GroupDNSServerOptions
+	if err := json.UnmarshalDisallowUnknownFields(content, (*plain)(o)); err != nil {
+		return err
+	}
+	if o.Policy == "" {
+		o.Policy = "reliable"
+	}
+	switch o.Policy {
+	case "reliable", "low_latency", "privacy":
+	default:
+		return E.New("unknown DNS group policy: ", o.Policy)
+	}
+	if o.Advanced == nil {
+		return nil
+	}
+	advanced := o.Advanced
+	if advanced.MaxAttempts < 0 || advanced.MaxInflight < 0 {
+		return E.New("dns group advanced attempt limits must not be negative")
+	}
+	if advanced.Execution == "failover" && advanced.MaxInflight > 1 {
+		return E.New("dns group advanced.max_inflight must be 1 when execution is failover")
+	}
+	return nil
 }
