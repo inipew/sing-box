@@ -88,15 +88,16 @@ func buildGroupTransport(
 	}
 
 	logger := nopLogger()
+	retryRCodes := map[int]bool{2: true, 5: true}
 
 	var dispatcher Dispatcher
 	switch modeStr {
 	case "concurrent":
-		dispatcher = &ConcurrentDispatcher{Tag: tag, Logger: logger, MaxRetries: maxRetries}
+		dispatcher = &ConcurrentDispatcher{Tag: tag, Logger: logger, MaxRetries: maxRetries, MaxInflight: len(members), RetryRCodes: retryRCodes}
 	case "fallback":
-		dispatcher = &FallbackDispatcher{Tag: tag, Logger: logger, FallbackDelay: fallbackDelay, MaxRetries: maxRetries}
+		dispatcher = &FallbackDispatcher{Tag: tag, Logger: logger, FallbackDelay: fallbackDelay, MaxRetries: maxRetries, MaxInflight: 2, RetryRCodes: retryRCodes}
 	default:
-		dispatcher = &SequentialDispatcher{Tag: tag, Logger: logger, MaxRetries: maxRetries}
+		dispatcher = &SequentialDispatcher{Tag: tag, Logger: logger, MaxRetries: maxRetries, RetryRCodes: retryRCodes}
 	}
 
 	tr := &GroupTransport{

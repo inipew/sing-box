@@ -70,6 +70,15 @@ type DNSTransport interface {
 	ExchangeAsync(ctx context.Context, message *dns.Msg, callback func(response *dns.Msg, err error))
 }
 
+type DNSResponseChecker func(response *dns.Msg) bool
+
+// DNSTransportWithResponseCheck lets a composite transport retry another
+// member before returning a response that the DNS router would reject.
+type DNSTransportWithResponseCheck interface {
+	DNSTransport
+	ExchangeWithResponseCheck(ctx context.Context, message *dns.Msg, checker DNSResponseChecker) (*dns.Msg, error)
+}
+
 type DNSTransportWithPreferredDomain interface {
 	DNSTransport
 	PreferredDomain(domain string) bool
@@ -99,20 +108,47 @@ type DNSTransportWithDialerOverride interface {
 	WithDialer(dialer N.Dialer) DNSTransport
 }
 
-// DNSTransportWithStats is optionally implemented by group transports that
-// track per-member latency and health metrics (e.g. for dashboard/API use).
-type DNSTransportWithStats interface {
+// DNSTransportNetworkless marks a transport that never opens network
+// connections, so a group-level detour can safely leave it unchanged.
+type DNSTransportNetworkless interface {
 	DNSTransport
-	// Stats returns a snapshot of RTT and health data for each member.
-	Stats() []DNSTransportMemberStats
+	Networkless()
 }
 
-type DNSTransportMemberStats struct {
-	Tag           string
-	AverageRTTMs  float64
-	JitterMs      float64
-	Failures      int
-	LastQueryTime time.Time
+type DNSGroupSnapshotProvider interface {
+	DNSTransport
+	GroupSnapshot() DNSGroupSnapshot
+}
+
+type DNSGroupSnapshot struct {
+	Tag          string                   `json:"tag"`
+	Policy       string                   `json:"policy"`
+	Selection    string                   `json:"selection"`
+	Execution    string                   `json:"execution"`
+	MaxAttempts  int                      `json:"max_attempts"`
+	MaxInflight  int                      `json:"max_inflight"`
+	HedgeDelayMs int64                    `json:"hedge_delay_ms,omitempty"`
+	Members      []DNSGroupMemberSnapshot `json:"members"`
+}
+
+type DNSGroupMemberSnapshot struct {
+	Tag                 string    `json:"tag"`
+	State               string    `json:"state"`
+	AverageRTTMs        float64   `json:"average_rtt_ms"`
+	JitterMs            float64   `json:"jitter_ms"`
+	SuccessRate         float64   `json:"success_rate"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	TotalAttempts       uint64    `json:"total_attempts"`
+	TotalFailures       uint64    `json:"total_failures"`
+	Selected            uint64    `json:"selected"`
+	Won                 uint64    `json:"won"`
+	Inflight            int       `json:"inflight"`
+	LastAttempt         time.Time `json:"last_attempt,omitempty"`
+	LastSuccess         time.Time `json:"last_success,omitempty"`
+	LastFailure         time.Time `json:"last_failure,omitempty"`
+	CircuitUntil        time.Time `json:"circuit_until,omitempty"`
+	ProbeAttempts       uint64    `json:"probe_attempts"`
+	ProbeFailures       uint64    `json:"probe_failures"`
 }
 
 type DNSTransportRegistry interface {
