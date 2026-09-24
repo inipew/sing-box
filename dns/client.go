@@ -408,9 +408,12 @@ func (c *Client) Exchange(ctx context.Context, transport adapter.DNSTransport, m
 		return earlyResponse, err
 	}
 	defer operation.release()
-	response, err := c.exchangeToTransport(operation.ctx, transport, operation.message)
+	response, err := c.exchangeToTransport(operation.ctx, transport, operation.message, operation.responseChecker)
 	if err != nil {
 		return nil, err
+	}
+	if _, checked := transport.(adapter.DNSTransportWithResponseCheck); checked {
+		operation.responseChecker = nil
 	}
 	return c.finishExchange(transport, operation, response)
 }
@@ -441,11 +444,14 @@ func (c *Client) ExchangeAsync(ctx context.Context, transport adapter.DNSTranspo
 			callback(nil, exchangeErr)
 			return
 		}
+		if _, checked := transport.(adapter.DNSTransportWithResponseCheck); checked {
+			operation.responseChecker = nil
+		}
 		finishedResponse, finishErr := c.finishExchange(transport, operation, response)
 		operation.release()
 		callback(finishedResponse, finishErr)
 	}
-	c.exchangeToTransportAsync(operation.ctx, transport, operation.message, finish)
+	c.exchangeToTransportAsync(operation.ctx, transport, operation.message, operation.responseChecker, finish)
 }
 
 func (c *Client) Lookup(ctx context.Context, transport adapter.DNSTransport, domain string, options adapter.DNSQueryOptions, responseChecker func(response *dns.Msg) bool) ([]netip.Addr, error) {
@@ -687,12 +693,15 @@ func (c *Client) backgroundRefreshDNS(transport adapter.DNSTransport, key dnsCac
 		ctx := adapter.ContextWithDNSTransportTag(c.ctx, transport.Tag())
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		response, err := c.exchangeToTransport(ctx, transport, message)
+		response, err := c.exchangeToTransport(ctx, transport, message, responseChecker)
 		if err != nil {
 			if c.logger != nil {
 				c.logger.DebugContext(ctx, "optimistic refresh failed for ", FqdnToDomain(key.Name), ": ", err)
 			}
 			return
+		}
+		if _, checked := transport.(adapter.DNSTransportWithResponseCheck); checked {
+			responseChecker = nil
 		}
 		if responseChecker != nil {
 			var rejected bool
@@ -749,8 +758,14 @@ func stripDNSPadding(response *dns.Msg) {
 	}
 }
 
-func (c *Client) exchangeToTransport(ctx context.Context, transport adapter.DNSTransport, message *dns.Msg) (*dns.Msg, error) {
-	response, err := transport.Exchange(ctx, message)
+func (c *Client) exchangeToTransport(ctx context.Context, transport adapter.DNSTransport, message *dns.Msg, checker adapter.DNSResponseChecker) (*dns.Msg, error) {
+	var response *dns.Msg
+	var err error
+	if checkedTransport, loaded := transport.(adapter.DNSTransportWithResponseCheck); loaded {
+		response, err = checkedTransport.ExchangeWithResponseCheck(ctx, message, checker)
+	} else {
+		response, err = transport.Exchange(ctx, message)
+	}
 	if err == nil {
 		stripDNSPadding(response)
 		return response, nil
@@ -762,20 +777,31 @@ func (c *Client) exchangeToTransport(ctx context.Context, transport adapter.DNST
 	return nil, err
 }
 
-func (c *Client) exchangeToTransportAsync(ctx context.Context, transport adapter.DNSTransport, message *dns.Msg, callback func(response *dns.Msg, err error)) {
+func (c *Client) exchangeToTransportAsync(ctx context.Context, transport adapter.DNSTransport, message *dns.Msg, checker adapter.DNSResponseChecker, callback func(response *dns.Msg, err error)) {
+	if checkedTransport, loaded := transport.(adapter.DNSTransportWithResponseCheck); loaded {
+		go func() {
+			response, err := checkedTransport.ExchangeWithResponseCheck(ctx, message, checker)
+			finishTransportExchange(message, response, err, callback)
+		}()
+		return
+	}
 	transport.ExchangeAsync(ctx, message, func(response *dns.Msg, err error) {
-		if err == nil {
-			stripDNSPadding(response)
-			callback(response, nil)
-			return
-		}
-		var rcodeError RcodeError
-		if errors.As(err, &rcodeError) {
-			callback(FixedResponseStatus(message, int(rcodeError)), nil)
-			return
-		}
-		callback(nil, err)
+		finishTransportExchange(message, response, err, callback)
 	})
+}
+
+func finishTransportExchange(message *dns.Msg, response *dns.Msg, err error, callback func(response *dns.Msg, err error)) {
+	if err == nil {
+		stripDNSPadding(response)
+		callback(response, nil)
+		return
+	}
+	var rcodeError RcodeError
+	if errors.As(err, &rcodeError) {
+		callback(FixedResponseStatus(message, int(rcodeError)), nil)
+		return
+	}
+	callback(nil, err)
 }
 
 func MessageToAddresses(response *dns.Msg) []netip.Addr {

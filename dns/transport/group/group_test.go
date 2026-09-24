@@ -20,6 +20,7 @@ type fakeTransport struct {
 	tag       string
 	delay     time.Duration
 	err       error
+	rcode     int
 	callCount atomic.Int64
 }
 
@@ -48,11 +49,40 @@ func (f *fakeTransport) Exchange(ctx context.Context, msg *mDNS.Msg) (*mDNS.Msg,
 	}
 	resp := new(mDNS.Msg)
 	resp.SetReply(msg)
+	resp.Rcode = f.rcode
 	resp.Answer = append(resp.Answer, &mDNS.A{
 		Hdr: mDNS.RR_Header{Name: "example.com.", Rrtype: mDNS.TypeA, Class: mDNS.ClassINET, Ttl: 60},
 		A:   []byte{1, 2, 3, 4},
 	})
 	return resp, nil
+}
+
+func TestGroupFailoverRetriesSERVFAIL(t *testing.T) {
+	bad := &fakeTransport{tag: "bad", rcode: mDNS.RcodeServerFailure}
+	good := &fakeTransport{tag: "good"}
+	tr := group.ExportNewGroupWithMembersOrdered(t, "test", "sequential", 0,
+		[]adapter.DNSTransport{bad, good})
+
+	response, err := tr.Exchange(context.Background(), makeMsg())
+	require.NoError(t, err)
+	require.Equal(t, mDNS.RcodeSuccess, response.Rcode)
+	require.EqualValues(t, 1, good.callCount.Load())
+}
+
+func TestGroupFailoverRetriesRejectedResponse(t *testing.T) {
+	first := &fakeTransport{tag: "first"}
+	second := &fakeTransport{tag: "second"}
+	tr := group.ExportNewGroupWithMembersOrdered(t, "test", "sequential", 0,
+		[]adapter.DNSTransport{first, second})
+
+	accepted := 0
+	response, err := tr.ExchangeWithResponseCheck(context.Background(), makeMsg(), func(response *mDNS.Msg) bool {
+		accepted++
+		return accepted > 1
+	})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.EqualValues(t, 1, second.callCount.Load())
 }
 
 func makeMsg() *mDNS.Msg {
