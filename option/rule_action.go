@@ -205,6 +205,14 @@ type _RateLimitActionOptions struct {
 
 type RateLimitActionOptions _RateLimitActionOptions
 
+func (r RateLimitActionOptions) DescribeSchema(builder schema.Builder) (*schema.Node, error) {
+	objectForm := schema.StrictObject()
+	if err := builder.FlattenStruct(objectForm, reflect.TypeFor[_RateLimitActionOptions]()); err != nil {
+		return nil, err
+	}
+	return schema.AnyOf(schema.StringNode(), objectForm), nil
+}
+
 func (r RateLimitActionOptions) MarshalJSON() ([]byte, error) {
 	if r.Tag != "" {
 		return json.Marshal(r.Tag)

@@ -1487,3 +1487,17 @@ sing-box 1.9.0 使 QueryFullProcessImageNameW 输出 Win32 路径（如 `C:\fold
       }
     }
     ```
+### 迁移 DNS 服务器组策略
+
+旧版 DNS 服务器组字段已不再接受。常见配置按下表替换：
+
+| 旧配置 | 新配置 |
+|--------|--------|
+| `mode: sequential` | `policy: privacy` 或 `advanced.execution: failover` |
+| `mode: fallback` | `policy: reliable` 或 `advanced.execution: hedge` |
+| `mode: concurrent` | `policy: low_latency` 或 `advanced.execution: parallel` |
+| `max_retries` | `advanced.max_attempts` |
+| `fallback_delay` | `advanced.hedge_delay` |
+| `health_check` | `advanced.health.active_probe` |
+
+选择策略迁移到 `advanced.selection`：`first` 替换为 `adaptive`，`random` 和 `round_robin` 保持原名。旧 `wp2`、`weighted` 和 `epsilon_greedy` 统一替换为文档定义的 `adaptive` 评分器。
