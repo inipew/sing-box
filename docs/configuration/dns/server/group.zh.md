@@ -67,7 +67,7 @@ icon: material/server-network
 - `health.max_cooldown`：指数退避上限，默认 `5m`。
 - `health.active_probe`：可选后台探测。默认关闭；默认每 `10m` 查询一次 `NS .`，超时 `5s`。
 
-`NOERROR` 和 `NXDOMAIN` 是协议有效的终止响应。默认重试 `SERVFAIL`、`REFUSED`、畸形响应、传输错误及被 DNS 规则拒绝的响应。因其他成员胜出而取消的请求不计为失败。
+`NOERROR` 和 `NXDOMAIN` 是协议有效的终止响应。默认重试 `SERVFAIL`、`REFUSED`、畸形响应、传输错误及被 DNS 规则拒绝的响应。如果所有已尝试的成员都失败，但至少一个成员返回了可重试的 RCODE，组会将该 DNS 响应返回给路由器。这样 `match_response` 规则仍可匹配 `SERVFAIL` 或 `REFUSED` 并切换到其他服务器。将 `retry_rcodes` 设为 `[]` 可跳过组内重试，立即传递这些 RCODE。因其他成员胜出而取消的请求不计为失败。
 
 ### 运行状态
 
