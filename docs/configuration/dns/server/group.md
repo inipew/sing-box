@@ -67,7 +67,7 @@ Optional overrides for the selected preset:
 - `health.max_cooldown`: maximum exponential cooldown, default `5m`.
 - `health.active_probe`: optional background probe. Disabled by default; its default query is `NS .`, every `10m`, with a `5s` timeout.
 
-`NOERROR` and `NXDOMAIN` are protocol-valid terminal responses. `SERVFAIL`, `REFUSED`, malformed responses, transport failures, and responses rejected by DNS rules are retried by default. Cancellations caused by another member winning are not failures.
+`NOERROR` and `NXDOMAIN` are protocol-valid terminal responses. `SERVFAIL`, `REFUSED`, malformed responses, transport failures, and responses rejected by DNS rules are retried by default. If every attempted member fails but at least one returns a retryable RCODE, the group returns that DNS response to the router. This allows `match_response` rules to match `SERVFAIL` or `REFUSED` and route to another server. Set `retry_rcodes` to `[]` to pass these RCODEs through immediately without trying another member. Cancellations caused by another member winning are not failures.
 
 ### Runtime status
 
