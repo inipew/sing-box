@@ -29,6 +29,7 @@ func (d *SequentialDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, 
 	}
 	var lastErr error
 	attemptErrors := make(map[string]error, limit)
+	var retryableResponse *mDNS.Msg
 	for i := 0; i < limit; i++ {
 		tag := selected[i]
 		transport, ok := byTag[tag]
@@ -45,6 +46,9 @@ func (d *SequentialDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, 
 				rtt.Record(tag, time.Since(start))
 				return resp, nil
 			}
+			if checker == nil && retryableResponse == nil && isRetryableResponse(message, resp, d.RetryRCodes) {
+				retryableResponse = resp
+			}
 		}
 		if !errors.Is(err, context.Canceled) {
 			rtt.RecordFailure(tag)
@@ -52,6 +56,12 @@ func (d *SequentialDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, 
 		d.Logger.DebugContext(ctx, "dns group[", d.Tag, "] sequential: server ", tag, " failed: ", err)
 		lastErr = err
 		attemptErrors[tag] = err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if retryableResponse != nil {
+		return retryableResponse, nil
 	}
 	return nil, aggregateDispatchError(d.Tag, "all servers failed", selected[:limit], attemptErrors, lastErr)
 }
@@ -117,6 +127,7 @@ func (d *ConcurrentDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, 
 
 	var lastErr error
 	attemptErrors := make(map[string]error, len(selected))
+	retryableResponses := make(map[string]*mDNS.Msg)
 	for received < launched {
 		select {
 		case r := <-ch:
@@ -127,6 +138,9 @@ func (d *ConcurrentDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, 
 					rtt.Record(r.tag, r.rtt)
 					cancel() // signal remaining goroutines to stop
 					return r.resp, nil
+				}
+				if checker == nil && isRetryableResponse(message, r.resp, d.RetryRCodes) {
+					retryableResponses[r.tag] = r.resp
 				}
 			}
 			if !errors.Is(r.err, context.Canceled) {
@@ -141,6 +155,9 @@ func (d *ConcurrentDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, 
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+	if response := firstRetryableResponse(selected, retryableResponses); response != nil {
+		return response, nil
 	}
 	return nil, aggregateDispatchError(d.Tag, "all concurrent servers failed", selected, attemptErrors, lastErr)
 }
@@ -178,6 +195,10 @@ func (d *FallbackDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, se
 			err = responseRejection(message, resp, checker, d.RetryRCodes)
 			if err == nil {
 				rtt.Record(selected[0], time.Since(start))
+				return resp, nil
+			}
+			if checker == nil && isRetryableResponse(message, resp, d.RetryRCodes) {
+				rtt.RecordFailure(selected[0])
 				return resp, nil
 			}
 		}
@@ -249,6 +270,7 @@ func (d *FallbackDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, se
 
 	var lastErr error
 	attemptErrors := make(map[string]error, len(selected))
+	retryableResponses := make(map[string]*mDNS.Msg)
 
 	for {
 		// Only exit when all launched goroutines have reported.
@@ -266,6 +288,9 @@ func (d *FallbackDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, se
 					rtt.Record(r.tag, r.rtt)
 					cancel()
 					return r.resp, nil
+				}
+				if checker == nil && isRetryableResponse(message, r.resp, d.RetryRCodes) {
+					retryableResponses[r.tag] = r.resp
 				}
 			}
 			if !errors.Is(r.err, context.Canceled) {
@@ -286,7 +311,31 @@ func (d *FallbackDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, se
 		}
 	}
 
+	if response := firstRetryableResponse(selected, retryableResponses); response != nil {
+		return response, nil
+	}
 	return nil, aggregateDispatchError(d.Tag, "all fallback servers failed", selected, attemptErrors, lastErr)
+}
+
+func firstRetryableResponse(selected []string, responses map[string]*mDNS.Msg) *mDNS.Msg {
+	for _, tag := range selected {
+		if response := responses[tag]; response != nil {
+			return response
+		}
+	}
+	return nil
+}
+
+func isRetryableResponse(request *mDNS.Msg, response *mDNS.Msg, retryRCodes map[int]bool) bool {
+	if response == nil || !retryRCodes[response.Rcode] || len(response.Question) != len(request.Question) {
+		return false
+	}
+	for index := range request.Question {
+		if response.Question[index] != request.Question[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func aggregateDispatchError(groupTag string, summary string, selected []string, attemptErrors map[string]error, fallback error) error {
