@@ -85,16 +85,65 @@ func TestGroupFailoverRetriesRejectedResponse(t *testing.T) {
 	require.EqualValues(t, 1, second.callCount.Load())
 }
 
-func TestGroupReportsPolicyRejectionWithReason(t *testing.T) {
+func TestGroupReturnsRetryableRcodeWhenMembersExhausted(t *testing.T) {
+	for _, rcode := range []int{mDNS.RcodeRefused, mDNS.RcodeServerFailure} {
+		for _, mode := range []string{"sequential", "concurrent", "fallback"} {
+			t.Run(mDNS.RcodeToString[rcode]+"/"+mode, func(t *testing.T) {
+				first := &fakeTransport{tag: "first", rcode: rcode}
+				second := &fakeTransport{tag: "second", rcode: rcode}
+				tr := group.ExportNewGroupWithMembersOrdered(t, "test", mode, 0,
+					[]adapter.DNSTransport{first, second})
+
+				response, err := tr.Exchange(context.Background(), makeMsg())
+				require.NoError(t, err)
+				require.Equal(t, rcode, response.Rcode)
+				require.EqualValues(t, 1, first.callCount.Load())
+				require.EqualValues(t, 1, second.callCount.Load())
+			})
+		}
+	}
+}
+
+func TestGroupReturnsRetryableRcodeAfterTransportFailure(t *testing.T) {
+	failed := &fakeTransport{tag: "failed", err: errors.New("network unavailable")}
 	refused := &fakeTransport{tag: "refused", rcode: mDNS.RcodeRefused}
 	tr := group.ExportNewGroupWithMembersOrdered(t, "test", "sequential", 0,
-		[]adapter.DNSTransport{refused})
+		[]adapter.DNSTransport{failed, refused})
 
-	_, err := tr.Exchange(context.Background(), makeMsg())
-	require.Error(t, err)
+	response, err := tr.Exchange(context.Background(), makeMsg())
+	require.NoError(t, err)
+	require.Equal(t, mDNS.RcodeRefused, response.Rcode)
+}
+
+func TestGroupHedgeReturnsRetryableRcodeWithOneAttempt(t *testing.T) {
+	refused := &fakeTransport{tag: "refused", rcode: mDNS.RcodeRefused}
+	tr := group.ExportNewGroupWithMembersOrdered(t, "test", "fallback", 1,
+		[]adapter.DNSTransport{refused, &fakeTransport{tag: "unused"}})
+
+	response, err := tr.Exchange(context.Background(), makeMsg())
+	require.NoError(t, err)
+	require.Equal(t, mDNS.RcodeRefused, response.Rcode)
+}
+
+func TestGroupStillRejectsExhaustedResponseChecker(t *testing.T) {
+	first := &fakeTransport{tag: "first"}
+	second := &fakeTransport{tag: "second"}
+	tr := group.ExportNewGroupWithMembersOrdered(t, "test", "sequential", 0,
+		[]adapter.DNSTransport{first, second})
+
+	_, err := tr.ExchangeWithResponseCheck(context.Background(), makeMsg(), func(*mDNS.Msg) bool { return false })
 	var rejected adapter.DNSResponseRejectedError
 	require.ErrorAs(t, err, &rejected)
-	require.ErrorContains(t, err, "retryable rcode REFUSED")
+}
+
+func TestGroupDoesNotBypassResponseCheckerForRetryableRcode(t *testing.T) {
+	refused := &fakeTransport{tag: "refused", rcode: mDNS.RcodeRefused}
+	tr := group.ExportNewGroupWithMembersOrdered(t, "test", "fallback", 0,
+		[]adapter.DNSTransport{refused})
+
+	_, err := tr.ExchangeWithResponseCheck(context.Background(), makeMsg(), func(*mDNS.Msg) bool { return true })
+	var rejected adapter.DNSResponseRejectedError
+	require.ErrorAs(t, err, &rejected)
 }
 
 func makeMsg() *mDNS.Msg {
