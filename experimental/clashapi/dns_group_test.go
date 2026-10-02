@@ -17,8 +17,8 @@ type dnsGroupTestManager struct {
 	transports []adapter.DNSTransport
 }
 
-func (m *dnsGroupTestManager) Start(adapter.StartStage) error { return nil }
-func (m *dnsGroupTestManager) Close() error                   { return nil }
+func (m *dnsGroupTestManager) Start(adapter.StartStage, *adapter.Scope) error { return nil }
+func (m *dnsGroupTestManager) Close() error                                   { return nil }
 func (m *dnsGroupTestManager) Transports() []adapter.DNSTransport {
 	return m.transports
 }
@@ -39,12 +39,12 @@ func (m *dnsGroupTestManager) Create(context.Context, log.ContextLogger, string,
 
 type dnsGroupTestTransport struct{}
 
-func (*dnsGroupTestTransport) Type() string                   { return "group" }
-func (*dnsGroupTestTransport) Tag() string                    { return "primary" }
-func (*dnsGroupTestTransport) Dependencies() []string         { return []string{"a"} }
-func (*dnsGroupTestTransport) Start(adapter.StartStage) error { return nil }
-func (*dnsGroupTestTransport) Close() error                   { return nil }
-func (*dnsGroupTestTransport) Reset()                         {}
+func (*dnsGroupTestTransport) Type() string                                   { return "group" }
+func (*dnsGroupTestTransport) Tag() string                                    { return "primary" }
+func (*dnsGroupTestTransport) Dependencies() []string                         { return []string{"a"} }
+func (*dnsGroupTestTransport) Start(adapter.StartStage, *adapter.Scope) error { return nil }
+func (*dnsGroupTestTransport) Close() error                                   { return nil }
+func (*dnsGroupTestTransport) Reset()                                         {}
 func (*dnsGroupTestTransport) Exchange(context.Context, *mDNS.Msg) (*mDNS.Msg, error) {
 	return nil, nil
 }

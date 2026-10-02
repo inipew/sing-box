@@ -61,7 +61,7 @@ type groupRuntime struct {
 	strategy   Strategy
 	dispatcher Dispatcher
 	health     *HealthChecker
-	owned      []adapter.DNSTransport
+	owned      *adapter.Scope
 	access     sync.Mutex
 	closing    bool
 	waiter     sync.WaitGroup
@@ -183,7 +183,7 @@ func (t *GroupTransport) CloseIdleConnections() {
 	}
 }
 
-func (t *GroupTransport) Start(stage adapter.StartStage) error {
+func (t *GroupTransport) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if stage != adapter.StartStateStart {
 		return nil
 	}
@@ -243,7 +243,7 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 		overrideDialer = detourDialer
 	}
 
-	var clonedMembers []adapter.DNSTransport
+	var clonedMembers *adapter.Scope
 	if overrideDialer != nil {
 		effective, cloned, err := t.wrapMembersWithDialer(members, overrideDialer)
 		if err != nil {
@@ -274,6 +274,7 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 		runtime.health = NewHealthChecker(runtimeCtx, members, t.hcOptions, t.rtt, t.logger)
 	}
 	t.runtime.Store(runtime)
+	scope.Add(t.Close)
 	if runtime.health != nil {
 		runtime.health.Start()
 	}
@@ -287,8 +288,9 @@ func (t *GroupTransport) Start(stage adapter.StartStage) error {
 	return nil
 }
 
-func (t *GroupTransport) wrapMembersWithDialer(members []adapter.DNSTransport, overrideDialer N.Dialer) (effective []adapter.DNSTransport, clonedMembers []adapter.DNSTransport, err error) {
+func (t *GroupTransport) wrapMembersWithDialer(members []adapter.DNSTransport, overrideDialer N.Dialer) (effective []adapter.DNSTransport, clonedMembers *adapter.Scope, err error) {
 	effective = make([]adapter.DNSTransport, len(members))
+	clonedMembers = adapter.NewScope(t.ctx, t.logger)
 	for i, m := range members {
 		if overridable, ok := m.(adapter.DNSTransportWithDialerOverride); ok {
 			existingDetour := dialer.DetourTag(overridable.RawDialer())
@@ -305,11 +307,10 @@ func (t *GroupTransport) wrapMembersWithDialer(members []adapter.DNSTransport, o
 			}
 
 			cloned := overridable.WithDialer(overrideDialer)
-			if err := cloned.Start(adapter.StartStateStart); err != nil {
+			if err := clonedMembers.Start("cloned DNS transport "+m.Tag(), cloned, adapter.StartStateStart); err != nil {
 				return nil, nil, closeOwnedTransports(E.Cause(err, "start cloned transport ", m.Tag()), clonedMembers)
 			}
 			effective[i] = cloned
-			clonedMembers = append(clonedMembers, cloned)
 			t.logger.Debug("dns group[", t.tag, "] dialer override applied to member: ", m.Tag())
 		} else {
 			if _, networkless := m.(adapter.DNSTransportNetworkless); !networkless {
@@ -337,11 +338,9 @@ func (t *GroupTransport) Close() error {
 	return closeOwnedTransports(nil, runtime.owned)
 }
 
-func closeOwnedTransports(err error, transports []adapter.DNSTransport) error {
-	for _, transport := range transports {
-		err = E.Append(err, transport.Close(), func(closeErr error) error {
-			return E.Cause(closeErr, "close cloned DNS transport ", transport.Tag())
-		})
+func closeOwnedTransports(err error, scope *adapter.Scope) error {
+	if scope != nil {
+		err = E.Errors(err, scope.Close())
 	}
 	return err
 }
