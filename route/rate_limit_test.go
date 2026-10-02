@@ -3,12 +3,14 @@ package route
 import (
 	"context"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	tun "github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/byteformats"
@@ -154,6 +156,15 @@ type mockOutbound struct {
 	tag           string
 	handler       func(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc)
 	packetHandler func(ctx context.Context, conn N.PacketConn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc)
+}
+
+type mockFlowOutbound struct {
+	*mockOutbound
+	tun.Port
+}
+
+func (*mockFlowOutbound) PreMatchFlow(string, netip.Addr) adapter.PreMatchAction {
+	return adapter.PreMatchFlow
 }
 
 func (m *mockOutbound) Type() string           { return "mock" }
@@ -384,4 +395,61 @@ func TestRateLimit_RoutePacketConnection_Throttled(t *testing.T) {
 	case <-time.After(4 * time.Second):
 		t.Fatal("timed out waiting for UDP write to complete")
 	}
+}
+
+func TestRateLimitPreMatchKeepsFlowInRoutedPath(t *testing.T) {
+	var upload byteformats.NetworkBytesCompat
+	require.NoError(t, json.Unmarshal([]byte(`"1 KB"`), &upload))
+	for _, action := range []string{"route", "bypass"} {
+		t.Run(action, func(t *testing.T) {
+			flow := &mockFlowOutbound{mockOutbound: &mockOutbound{tag: "flow"}}
+			outbounds := &mockOutboundManager{outbounds: map[string]adapter.Outbound{"flow": flow}}
+			ctx := service.ContextWith[adapter.OutboundManager](context.Background(), outbounds)
+			routeAction := option.RouteActionOptions{
+				Outbound: "flow",
+				RawRouteOptionsActionOptions: option.RawRouteOptionsActionOptions{
+					RateLimit: &option.RateLimitActionOptions{Upload: &upload},
+				},
+			}
+			ruleAction := option.RuleAction{Action: action}
+			if action == "bypass" {
+				ruleAction.BypassOptions = routeAction
+			} else {
+				ruleAction.RouteOptions = routeAction
+			}
+			options := option.RouteOptions{Rules: []option.Rule{{
+				Type:           "default",
+				DefaultOptions: option.DefaultRule{RuleAction: ruleAction},
+			}}}
+			router := NewRouter(ctx, log.NewNOPFactory(), options, option.DNSOptions{}, nil)
+			require.NoError(t, router.Initialize(options.Rules, nil))
+			result := router.PreMatch(adapter.InboundContext{
+				Network:     N.NetworkTCP,
+				Source:      M.ParseSocksaddr("192.0.2.1:1234"),
+				Destination: M.ParseSocksaddr("198.51.100.1:443"),
+			}, nil)
+			require.Equal(t, adapter.PreMatchContinue, result.Action)
+		})
+	}
+}
+
+func TestRateLimitBypassWithoutOutboundStillAppliesInRouter(t *testing.T) {
+	var upload byteformats.NetworkBytesCompat
+	require.NoError(t, json.Unmarshal([]byte(`"1 KB"`), &upload))
+	ruleAction := option.RuleAction{Action: "bypass", BypassOptions: option.RouteActionOptions{
+		RawRouteOptionsActionOptions: option.RawRouteOptionsActionOptions{
+			RateLimit: &option.RateLimitActionOptions{Upload: &upload},
+		},
+	}}
+	options := option.RouteOptions{Rules: []option.Rule{{
+		Type: "default", DefaultOptions: option.DefaultRule{RuleAction: ruleAction},
+	}}}
+	ctx := context.Background()
+	router := NewRouter(ctx, log.NewNOPFactory(), options, option.DNSOptions{}, nil)
+	require.NoError(t, router.Initialize(options.Rules, nil))
+	metadata := adapter.InboundContext{Network: N.NetworkTCP, Destination: M.ParseSocksaddr("198.51.100.1:443")}
+	require.Equal(t, adapter.PreMatchContinue, router.PreMatch(metadata, nil).Action)
+	_, _, _, _, err := router.matchRule(ctx, &metadata, nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, metadata.RateLimit)
 }

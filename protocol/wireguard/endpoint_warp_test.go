@@ -158,7 +158,7 @@ func TestWARPProvisionFailureClean(t *testing.T) {
 		logger:   log.NewNOPFactory().Logger(),
 		provider: &mockProfileProvider{err: mockErr},
 	}
-	err := ep.Start(adapter.StartStateStart)
+	err := ep.Start(adapter.StartStateStart, adapter.NewScope(context.Background(), ep.logger))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "simulated cloudflare api timeout")
 	require.False(t, ep.started)
@@ -202,7 +202,7 @@ func TestWARPPostStartRequiresStart(t *testing.T) {
 		logger:   log.NewNOPFactory().Logger(),
 		provider: &mockProfileProvider{err: errors.New("provider err")},
 	}
-	err := ep.Start(adapter.StartStatePostStart)
+	err := ep.Start(adapter.StartStatePostStart, adapter.NewScope(context.Background(), ep.logger))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "has not completed start stage")
 }
