@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -74,6 +75,7 @@ type ConcurrentDispatcher struct {
 	MaxRetries  int
 	MaxInflight int
 	RetryRCodes map[int]bool
+	workers     *sync.WaitGroup
 }
 
 func (d *ConcurrentDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, selected []string, byTag map[string]adapter.DNSTransport, rtt RTTEstimator, checker adapter.DNSResponseChecker) (*mDNS.Msg, error) {
@@ -102,7 +104,13 @@ func (d *ConcurrentDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, 
 			return false
 		}
 		launched++
+		if d.workers != nil {
+			d.workers.Add(1)
+		}
 		go func(tag string, transport adapter.DNSTransport) {
+			if d.workers != nil {
+				defer d.workers.Done()
+			}
 			rtt.Begin(tag)
 			defer rtt.End(tag)
 			start := time.Now()
@@ -172,6 +180,7 @@ type FallbackDispatcher struct {
 	MaxRetries    int
 	MaxInflight   int
 	RetryRCodes   map[int]bool
+	workers       *sync.WaitGroup
 }
 
 func (d *FallbackDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, selected []string, byTag map[string]adapter.DNSTransport, rtt RTTEstimator, checker adapter.DNSResponseChecker) (*mDNS.Msg, error) {
@@ -226,7 +235,13 @@ func (d *FallbackDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, se
 		if !ok {
 			return false
 		}
+		if d.workers != nil {
+			d.workers.Add(1)
+		}
 		go func(tag string, tr adapter.DNSTransport) {
+			if d.workers != nil {
+				defer d.workers.Done()
+			}
 			rtt.Begin(tag)
 			defer rtt.End(tag)
 			start := time.Now()
@@ -398,6 +413,9 @@ func responseRejection(request *mDNS.Msg, response *mDNS.Msg, checker adapter.DN
 	}
 	if retryRCodes[response.Rcode] {
 		return reject("retryable rcode " + mDNS.RcodeToString[response.Rcode])
+	}
+	if checker != nil && response.Rcode != mDNS.RcodeSuccess && response.Rcode != mDNS.RcodeNameError {
+		return reject("response rcode rejected by DNS response checker: " + mDNS.RcodeToString[response.Rcode])
 	}
 	if response.Rcode == mDNS.RcodeSuccess || response.Rcode == mDNS.RcodeNameError {
 		if checker != nil && !checker(response) {

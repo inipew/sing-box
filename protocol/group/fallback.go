@@ -67,32 +67,27 @@ func NewFallback(ctx context.Context, router adapter.Router, logger log.ContextL
 	return outbound, nil
 }
 
-func (s *Fallback) Start() error {
-	outbounds := make([]adapter.Outbound, 0, len(s.tags))
-	for i, tag := range s.tags {
-		detour, loaded := s.outbound.Outbound(tag)
-		if !loaded {
-			return E.New("outbound ", i, " not found: ", tag)
+func (s *Fallback) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	switch stage {
+	case adapter.StartStateStart:
+		outbounds := make([]adapter.Outbound, 0, len(s.tags))
+		for i, tag := range s.tags {
+			detour, loaded := s.outbound.Outbound(tag)
+			if !loaded {
+				return E.New("outbound ", i, " not found: ", tag)
+			}
+			outbounds = append(outbounds, detour)
 		}
-		outbounds = append(outbounds, detour)
+		group, err := NewFallbackGroup(s.ctx, s.outbound, s.logger, outbounds, s.link, s.interval, s.idleTimeout, s.timeout, s.fallbackDelay, s.interruptExternalConnections)
+		if err != nil {
+			return err
+		}
+		s.group = group
+	case adapter.StartStateStarted:
+		s.group.PostStart()
+		scope.Add(s.group.Close)
 	}
-	group, err := NewFallbackGroup(s.ctx, s.outbound, s.logger, outbounds, s.link, s.interval, s.idleTimeout, s.timeout, s.fallbackDelay, s.interruptExternalConnections)
-	if err != nil {
-		return err
-	}
-	s.group = group
 	return nil
-}
-
-func (s *Fallback) PostStart() error {
-	s.group.PostStart()
-	return nil
-}
-
-func (s *Fallback) Close() error {
-	return common.Close(
-		common.PtrOrNil(s.group),
-	)
 }
 
 func (s *Fallback) Selected(network string) adapter.Outbound {
