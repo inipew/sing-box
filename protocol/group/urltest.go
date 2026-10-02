@@ -388,7 +388,7 @@ func (g *URLTestGroup) urlTest(ctx context.Context, force bool) (map[string]uint
 		return make(map[string]uint16), nil
 	}
 	defer g.checking.Store(false)
-	result := URLTestOutbounds(ctx, g.outbound, g.history, g.logger, g.outbounds, g.link, g.interval, force)
+	result := urlTestOutbounds(ctx, g.outbound, g.history, g.logger, g.outbounds, g.link, g.interval, g.timeout, force)
 	g.performUpdateCheck()
 	return result, nil
 }
@@ -403,6 +403,7 @@ type urlTestBatch struct {
 	outbound adapter.OutboundManager
 	history  *urltest.HistoryStorage
 	logger   log.Logger
+	timeout  time.Duration
 	batch    *batch.Batch[any]
 	checked  map[string]bool
 	groups   []adapter.OutboundGroup
@@ -411,12 +412,20 @@ type urlTestBatch struct {
 }
 
 func URLTestOutbounds(ctx context.Context, outboundManager adapter.OutboundManager, history *urltest.HistoryStorage, logger log.Logger, outbounds []adapter.Outbound, link string, interval time.Duration, force bool) map[string]uint16 {
+	return urlTestOutbounds(ctx, outboundManager, history, logger, outbounds, link, interval, C.TCPTimeout, force)
+}
+
+func urlTestOutbounds(ctx context.Context, outboundManager adapter.OutboundManager, history *urltest.HistoryStorage, logger log.Logger, outbounds []adapter.Outbound, link string, interval time.Duration, timeout time.Duration, force bool) map[string]uint16 {
+	if timeout == 0 {
+		timeout = C.TCPTimeout
+	}
 	b, _ := batch.New(ctx, batch.WithConcurrencyNum[any](10))
 	testBatch := &urlTestBatch{
 		ctx:      ctx,
 		outbound: outboundManager,
 		history:  history,
 		logger:   logger,
+		timeout:  timeout,
 		batch:    b,
 		checked:  make(map[string]bool),
 		result:   make(map[string]uint16),
@@ -463,7 +472,7 @@ func (b *urlTestBatch) test(outbounds []adapter.Outbound, link string, interval 
 			}
 			b.checked[tag] = true
 			b.batch.Go(tag, func() (any, error) {
-				testCtx, cancel := context.WithTimeout(b.ctx, C.TCPTimeout)
+				testCtx, cancel := context.WithTimeout(b.ctx, b.timeout)
 				defer cancel()
 				testChan := make(chan urlTestResult, 1)
 				go func() {

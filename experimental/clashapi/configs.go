@@ -3,7 +3,9 @@ package clashapi
 import (
 	"net/http"
 
+	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/log"
+	"github.com/sagernet/sing/service"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
@@ -12,8 +14,9 @@ import (
 func configRouter(server *Server, logFactory log.Factory) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", getConfigs(server, logFactory))
-	// r.Put("/", updateConfigs)
-	r.Put("/", reload(server))
+	if service.FromContext[adapter.PlatformInterface](server.ctx) == nil {
+		r.Put("/", reload(server))
+	}
 	r.Patch("/", patchConfigs(server))
 	return r
 }

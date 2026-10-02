@@ -34,14 +34,23 @@ func NewLimitedPacketConn(ctx context.Context, conn N.PacketConn, limiter *Limit
 }
 
 func (c *LimitedPacketConn) ReadPacket(buffer *buf.Buffer) (M.Socksaddr, error) {
-	destination, err := c.PacketConn.ReadPacket(buffer)
-	if err != nil {
-		return destination, err
+	for {
+		destination, err := c.PacketConn.ReadPacket(buffer)
+		if err != nil {
+			return destination, err
+		}
+		if c.limiter.HasUpload() && buffer.Len() > 0 {
+			err = c.limiter.WaitUploadWithTimeout(c.ctx, buffer.Len(), udpWaitTimeout)
+			if err != nil {
+				buffer.Reset()
+				if ctxErr := c.ctx.Err(); ctxErr != nil {
+					return M.Socksaddr{}, ctxErr
+				}
+				continue
+			}
+		}
+		return destination, nil
 	}
-	if c.limiter.HasUpload() && buffer.Len() > 0 {
-		_ = c.limiter.WaitUploadWithTimeout(c.ctx, buffer.Len(), udpWaitTimeout)
-	}
-	return destination, nil
 }
 
 func (c *LimitedPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {

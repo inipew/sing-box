@@ -4,6 +4,7 @@ package group
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,11 +92,12 @@ func buildGroupTransport(
 	retryRCodes := map[int]bool{2: true, 5: true}
 
 	var dispatcher Dispatcher
+	workerWaiter := new(sync.WaitGroup)
 	switch modeStr {
 	case "concurrent":
-		dispatcher = &ConcurrentDispatcher{Tag: tag, Logger: logger, MaxRetries: maxRetries, MaxInflight: len(members), RetryRCodes: retryRCodes}
+		dispatcher = &ConcurrentDispatcher{Tag: tag, Logger: logger, MaxRetries: maxRetries, MaxInflight: len(members), RetryRCodes: retryRCodes, workers: workerWaiter}
 	case "fallback":
-		dispatcher = &FallbackDispatcher{Tag: tag, Logger: logger, FallbackDelay: fallbackDelay, MaxRetries: maxRetries, MaxInflight: 2, RetryRCodes: retryRCodes}
+		dispatcher = &FallbackDispatcher{Tag: tag, Logger: logger, FallbackDelay: fallbackDelay, MaxRetries: maxRetries, MaxInflight: 2, RetryRCodes: retryRCodes, workers: workerWaiter}
 	default:
 		dispatcher = &SequentialDispatcher{Tag: tag, Logger: logger, MaxRetries: maxRetries, RetryRCodes: retryRCodes}
 	}
@@ -122,6 +124,7 @@ func buildGroupTransport(
 		byTag:      byTag,
 		strategy:   strategy,
 		dispatcher: dispatcher,
+		workers:    workerWaiter,
 	})
 
 	t.Cleanup(func() { _ = tr.Close() })

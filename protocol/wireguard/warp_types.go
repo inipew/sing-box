@@ -114,7 +114,7 @@ func (c *WARPConfig) WireGuardEndpointOptions() option.WireGuardEndpointOptions 
 				Port:                        serverPort,
 				PublicKey:                   peerPublicKey,
 				PreSharedKey:                pskStr,
-				AllowedIPs:                  badoption.Listable[netip.Prefix]{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")},
+				AllowedIPs:                  option.LegacyListable[netip.Prefix]{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")},
 				PersistentKeepaliveInterval: keepalive,
 				Reserved:                    c.Reserved[:],
 			},
