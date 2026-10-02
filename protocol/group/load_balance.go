@@ -74,28 +74,23 @@ func NewLoadBalance(ctx context.Context, router adapter.Router, logger log.Conte
 	return outbound, nil
 }
 
-func (s *LoadBalance) Start() error {
-	outbounds := make([]adapter.Outbound, 0, len(s.tags))
-	for i, tag := range s.tags {
-		detour, loaded := s.outbound.Outbound(tag)
-		if !loaded {
-			return E.New("outbound ", i, " not found: ", tag)
+func (s *LoadBalance) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	switch stage {
+	case adapter.StartStateStart:
+		outbounds := make([]adapter.Outbound, 0, len(s.tags))
+		for i, tag := range s.tags {
+			detour, loaded := s.outbound.Outbound(tag)
+			if !loaded {
+				return E.New("outbound ", i, " not found: ", tag)
+			}
+			outbounds = append(outbounds, detour)
 		}
-		outbounds = append(outbounds, detour)
+		s.group.outbounds = outbounds
+	case adapter.StartStateStarted:
+		s.group.PostStart()
+		scope.Add(s.group.Close)
 	}
-	s.group.outbounds = outbounds
 	return nil
-}
-
-func (s *LoadBalance) PostStart() error {
-	s.group.PostStart()
-	return nil
-}
-
-func (s *LoadBalance) Close() error {
-	return common.Close(
-		common.PtrOrNil(s.group),
-	)
 }
 
 func (s *LoadBalance) Selected(network string) adapter.Outbound {

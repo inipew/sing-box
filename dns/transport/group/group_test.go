@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	dnsclient "github.com/sagernet/sing-box/dns"
 	"github.com/sagernet/sing-box/dns/transport/group"
 	"github.com/stretchr/testify/require"
 
@@ -22,6 +23,29 @@ type fakeTransport struct {
 	err       error
 	rcode     int
 	callCount atomic.Int64
+}
+
+type environmentTransport struct {
+	*fakeTransport
+	environment []string
+}
+
+func (t *environmentTransport) Environment() []string { return t.environment }
+
+type stubbornTransport struct {
+	*fakeTransport
+	started  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
+}
+
+func (t *stubbornTransport) Exchange(_ context.Context, msg *mDNS.Msg) (*mDNS.Msg, error) {
+	close(t.started)
+	<-t.release
+	defer close(t.finished)
+	response := new(mDNS.Msg)
+	response.SetReply(msg)
+	return response, nil
 }
 
 func (f *fakeTransport) Type() string                                       { return "fake" }
@@ -144,6 +168,94 @@ func TestGroupDoesNotBypassResponseCheckerForRetryableRcode(t *testing.T) {
 	_, err := tr.ExchangeWithResponseCheck(context.Background(), makeMsg(), func(*mDNS.Msg) bool { return true })
 	var rejected adapter.DNSResponseRejectedError
 	require.ErrorAs(t, err, &rejected)
+}
+
+func TestGroupRejectsNonStandardRcodeWhenResponseCheckerIsPresent(t *testing.T) {
+	for _, mode := range []string{"sequential", "concurrent", "fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			malformed := &fakeTransport{tag: "malformed", rcode: mDNS.RcodeFormatError}
+			groupTransport := group.ExportNewGroupWithMembersOrdered(t, "group", mode, 0,
+				[]adapter.DNSTransport{malformed})
+			_, err := groupTransport.ExchangeWithResponseCheck(context.Background(), makeMsg(), func(*mDNS.Msg) bool { return true })
+			var rejected adapter.DNSResponseRejectedError
+			require.ErrorAs(t, err, &rejected)
+		})
+	}
+}
+
+func TestGroupEnvironmentTracksMemberConfiguration(t *testing.T) {
+	local := &environmentTransport{fakeTransport: &fakeTransport{tag: "local"}, environment: []string{"nameserver=192.0.2.1"}}
+	groupTransport := group.ExportNewGroupWithMembersOrdered(t, "group", "sequential", 0,
+		[]adapter.DNSTransport{local, &fakeTransport{tag: "static"}})
+	environmentGroup, ok := any(groupTransport).(adapter.DNSTransportWithEnvironment)
+	require.True(t, ok, "group must expose member environment to the DNS cache")
+	environment := environmentGroup.Environment()
+	require.NotEmpty(t, environment)
+	local.environment = []string{"nameserver=192.0.2.2"}
+	require.NotEqual(t, environment, environmentGroup.Environment())
+}
+
+func TestClientCacheMissesAfterGroupMemberEnvironmentChanges(t *testing.T) {
+	local := &environmentTransport{fakeTransport: &fakeTransport{tag: "local"}, environment: []string{"nameserver=192.0.2.1"}}
+	groupTransport := group.ExportNewGroupWithMembersOrdered(t, "group", "sequential", 0,
+		[]adapter.DNSTransport{local})
+	client := dnsclient.NewClient(dnsclient.ClientOptions{Context: context.Background()})
+
+	for range 2 {
+		_, err := client.Exchange(context.Background(), groupTransport, makeMsg(), adapter.DNSQueryOptions{}, nil)
+		require.NoError(t, err)
+	}
+	require.EqualValues(t, 1, local.callCount.Load(), "second query should use the cache")
+	local.environment = []string{"nameserver=192.0.2.2"}
+	_, err := client.Exchange(context.Background(), groupTransport, makeMsg(), adapter.DNSQueryOptions{}, nil)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, local.callCount.Load(), "changed environment must invalidate cached answer")
+}
+
+func TestGroupCloseWaitsForCancelledConcurrentWorkers(t *testing.T) {
+	for _, mode := range []string{"concurrent", "fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			slow := &stubbornTransport{fakeTransport: &fakeTransport{tag: "slow"}, started: make(chan struct{}), release: make(chan struct{}), finished: make(chan struct{})}
+			fast := &fakeTransport{tag: "fast", delay: 20 * time.Millisecond}
+			groupTransport := group.ExportNewGroupWithMembersAndDelay(t, "group", mode, time.Millisecond,
+				[]adapter.DNSTransport{slow, fast})
+			defer func() {
+				select {
+				case <-slow.release:
+				default:
+					close(slow.release)
+				}
+			}()
+			response, err := groupTransport.Exchange(context.Background(), makeMsg())
+			require.NoError(t, err)
+			require.NotNil(t, response)
+			<-slow.started
+			closed := make(chan error, 1)
+			go func() { closed <- groupTransport.Close() }()
+			select {
+			case <-closed:
+				t.Fatal("group closed before the cancelled worker finished")
+			case <-time.After(30 * time.Millisecond):
+			}
+			close(slow.release)
+			select {
+			case err := <-closed:
+				require.NoError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("group did not close after worker finished")
+			}
+			requireClosed(t, slow.finished)
+		})
+	}
+}
+
+func requireClosed(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	default:
+		t.Fatal("worker was still running")
+	}
 }
 
 func makeMsg() *mDNS.Msg {

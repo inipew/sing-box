@@ -1,12 +1,27 @@
 package group
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	mDNS "github.com/miekg/dns"
+	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
 	"github.com/stretchr/testify/require"
 )
+
+type replyingTransport struct {
+	*closeErrorTransport
+	calls int
+}
+
+func (t *replyingTransport) Exchange(_ context.Context, query *mDNS.Msg) (*mDNS.Msg, error) {
+	t.calls++
+	response := new(mDNS.Msg)
+	response.SetReply(query)
+	return response, nil
+}
 
 func TestCompilePolicyReliableDefaults(t *testing.T) {
 	policy, err := compilePolicy(3, option.GroupDNSServerOptions{Policy: "reliable"})
@@ -104,4 +119,35 @@ func TestRTTSortUsesConfiguredFailureThreshold(t *testing.T) {
 	estimator.RecordFailure("failed")
 
 	require.Equal(t, []string{"healthy", "failed"}, estimator.Sorted([]string{"failed", "healthy"}))
+}
+
+func TestRecoveredCircuitGetsAUserQueryBeforeHealthyPrimary(t *testing.T) {
+	now := time.Unix(100, 0)
+	estimator := newDefaultRTTEstimator(4, 1, time.Minute, 5*time.Minute, func() time.Time { return now })
+	estimator.Record("healthy", 10*time.Millisecond)
+	estimator.RecordFailure("recovering")
+	now = now.Add(time.Minute + time.Second)
+
+	require.Equal(t, "half_open", estimator.Snapshot("recovering").State)
+	require.Equal(t, []string{"recovering", "healthy"}, estimator.Sorted([]string{"healthy", "recovering"}))
+}
+
+func TestHalfOpenMemberIsDispatchedEvenWhenFastPrimaryWouldWin(t *testing.T) {
+	now := time.Unix(100, 0)
+	healthy := &replyingTransport{closeErrorTransport: &closeErrorTransport{tag: "healthy"}}
+	recovering := &replyingTransport{closeErrorTransport: &closeErrorTransport{tag: "recovering"}}
+	groupTransport := buildGroupTransport(t, "group", "round_robin", "sequential", 1, defaultFallbackDelay,
+		[]adapter.DNSTransport{healthy, recovering})
+	estimator := newDefaultRTTEstimator(4, 1, time.Minute, 5*time.Minute, func() time.Time { return now })
+	estimator.Record("healthy", 10*time.Millisecond)
+	estimator.RecordFailure("recovering")
+	now = now.Add(time.Minute + time.Second)
+	groupTransport.rtt = estimator
+
+	query := new(mDNS.Msg)
+	query.SetQuestion("example.com.", mDNS.TypeA)
+	_, err := groupTransport.Exchange(context.Background(), query)
+	require.NoError(t, err)
+	require.Equal(t, 1, recovering.calls)
+	require.Equal(t, "closed", estimator.Snapshot("recovering").State)
 }
