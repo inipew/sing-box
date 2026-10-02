@@ -422,6 +422,9 @@ func (r *Router) PreMatch(metadata adapter.InboundContext, firstPacket []byte) a
 				return continueResult
 			}
 			applyRouteOptionsOverride(&metadata, &action.RuleActionRouteOptions)
+			if metadata.RateLimit != nil {
+				return continueResult
+			}
 			if action.Outbound == "" {
 				if metadata.Destination.IsDomain() || metadata.Destination != packetDestination {
 					return continueResult
@@ -511,6 +514,9 @@ func (r *Router) preMatchFlow(ctx context.Context, metadata *adapter.InboundCont
 	flowAction := flowOutbound.PreMatchFlow(metadata.Network, metadata.Destination.Addr)
 	if flowAction != adapter.PreMatchFlow {
 		return adapter.PreMatchResult{Action: flowAction, Outbound: outbound}
+	}
+	if metadata.RateLimit != nil {
+		return continueResult
 	}
 	result := adapter.PreMatchResult{Action: adapter.PreMatchFlow, Outbound: outbound}
 	if metadata.Network == N.NetworkUDP {
@@ -662,6 +668,9 @@ match:
 		case *R.RuleActionBypass:
 			if action.Outbound != "" {
 				routeOptions = &action.RuleActionRouteOptions
+			} else if action.RateLimit != nil {
+				// PreMatch stays in the router when a bypass rule has a rate limit.
+				metadata.RateLimit = action.RateLimit
 			}
 		}
 		if routeOptions != nil {

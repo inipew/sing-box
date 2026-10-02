@@ -24,18 +24,18 @@ const (
 	maxExternalUIExtractSize  = 128 * 1024 * 1024
 )
 
-func (s *Server) checkAndDownloadExternalUI(update bool) error {
+func (s *Server) checkAndDownloadExternalUI(ctx context.Context, update bool) error {
 	s.externalUIAccess.Lock()
 	defer s.externalUIAccess.Unlock()
 	if s.externalUI == "" {
 		return nil
 	}
-	entries, err := filemanager.ReadDir(s.ctx, s.externalUI)
+	entries, err := filemanager.ReadDir(ctx, s.externalUI)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return E.Cause(err, "read external UI directory")
 		}
-		if err = filemanager.MkdirAll(s.ctx, s.externalUI, 0o755); err != nil {
+		if err = filemanager.MkdirAll(ctx, s.externalUI, 0o755); err != nil {
 			return E.Cause(err, "create external UI directory")
 		}
 	}
@@ -50,7 +50,7 @@ func (s *Server) checkAndDownloadExternalUI(update bool) error {
 		if len(entries) == 0 && s.lastEtag != "" {
 			s.lastEtag = ""
 		}
-		err = s.downloadExternalUI()
+		err = s.downloadExternalUI(ctx)
 		if err != nil {
 			s.logger.Error("download external UI error: ", err)
 			return err
@@ -59,7 +59,7 @@ func (s *Server) checkAndDownloadExternalUI(update bool) error {
 	return nil
 }
 
-func (s *Server) downloadExternalUI() error {
+func (s *Server) downloadExternalUI(ctx context.Context) error {
 	var downloadURL string
 	if s.externalUIDownloadURL != "" {
 		downloadURL = s.externalUIDownloadURL
@@ -80,7 +80,7 @@ func (s *Server) downloadExternalUI() error {
 	if s.lastEtag != "" {
 		request.Header.Set("If-None-Match", s.lastEtag)
 	}
-	response, err := httpClient.Do(request.WithContext(s.ctx))
+	response, err := httpClient.Do(request.WithContext(ctx))
 	if err != nil {
 		return err
 	}
