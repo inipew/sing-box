@@ -181,8 +181,8 @@ type mockOutboundManager struct {
 	outbounds map[string]adapter.Outbound
 }
 
-func (m *mockOutboundManager) Start(stage adapter.StartStage) error { return nil }
-func (m *mockOutboundManager) Close() error                         { return nil }
+func (m *mockOutboundManager) Start(stage adapter.StartStage, scope *adapter.Scope) error { return nil }
+func (m *mockOutboundManager) Close() error                                               { return nil }
 func (m *mockOutboundManager) Outbound(tag string) (adapter.Outbound, bool) {
 	o, ok := m.outbounds[tag]
 	return o, ok
