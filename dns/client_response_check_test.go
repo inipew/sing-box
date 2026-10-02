@@ -18,12 +18,12 @@ type checkedClientRejectedError struct{}
 func (checkedClientRejectedError) Error() string        { return "composite response rejected: REFUSED" }
 func (checkedClientRejectedError) DNSResponseRejected() {}
 
-func (*checkedClientTestTransport) Type() string                   { return "checked" }
-func (*checkedClientTestTransport) Tag() string                    { return "checked" }
-func (*checkedClientTestTransport) Dependencies() []string         { return nil }
-func (*checkedClientTestTransport) Start(adapter.StartStage) error { return nil }
-func (*checkedClientTestTransport) Close() error                   { return nil }
-func (*checkedClientTestTransport) Reset()                         {}
+func (*checkedClientTestTransport) Type() string                                   { return "checked" }
+func (*checkedClientTestTransport) Tag() string                                    { return "checked" }
+func (*checkedClientTestTransport) Dependencies() []string                         { return nil }
+func (*checkedClientTestTransport) Start(adapter.StartStage, *adapter.Scope) error { return nil }
+func (*checkedClientTestTransport) Close() error                                   { return nil }
+func (*checkedClientTestTransport) Reset()                                         {}
 func (t *checkedClientTestTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
 	return t.ExchangeWithResponseCheck(ctx, message, nil)
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/stretchr/testify/require"
@@ -18,8 +19,9 @@ func newDNSCacheFile(t *testing.T) *CacheFile {
 		Path:     t.TempDir() + "/cache.db",
 		StoreDNS: true,
 	})
-	require.NoError(t, cache.Start(adapter.StartStateInitialize))
-	t.Cleanup(func() { require.NoError(t, cache.Close()) })
+	scope := adapter.NewScope(context.Background(), log.NewNOPFactory().Logger())
+	require.NoError(t, cache.Start(adapter.StartStateInitialize, scope))
+	t.Cleanup(func() { require.NoError(t, scope.Close()) })
 	return cache
 }
 
