@@ -24,12 +24,12 @@ type fakeTransport struct {
 	callCount atomic.Int64
 }
 
-func (f *fakeTransport) Type() string                     { return "fake" }
-func (f *fakeTransport) Tag() string                      { return f.tag }
-func (f *fakeTransport) Dependencies() []string           { return nil }
-func (f *fakeTransport) Reset()                           {}
-func (f *fakeTransport) Start(_ adapter.StartStage) error { return nil }
-func (f *fakeTransport) Close() error                     { return nil }
+func (f *fakeTransport) Type() string                                       { return "fake" }
+func (f *fakeTransport) Tag() string                                        { return f.tag }
+func (f *fakeTransport) Dependencies() []string                             { return nil }
+func (f *fakeTransport) Reset()                                             {}
+func (f *fakeTransport) Start(_ adapter.StartStage, _ *adapter.Scope) error { return nil }
+func (f *fakeTransport) Close() error                                       { return nil }
 
 func (f *fakeTransport) ExchangeAsync(ctx context.Context, msg *mDNS.Msg, callback func(response *mDNS.Msg, err error)) {
 	callback(f.Exchange(ctx, msg))
