@@ -40,6 +40,7 @@ type WARPEndpoint struct {
 	provider   ProfileProvider
 	access     sync.RWMutex
 	underlying *Endpoint
+	scope      *adapter.Scope
 	started    bool
 	ready      bool
 	closed     bool
@@ -85,7 +86,7 @@ func NewWARPEndpoint(ctx context.Context, router adapter.Router, logger log.Cont
 	return ep, nil
 }
 
-func (w *WARPEndpoint) Start(stage adapter.StartStage) error {
+func (w *WARPEndpoint) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	switch stage {
 	case adapter.StartStateInitialize:
 		return nil
@@ -111,16 +112,22 @@ func (w *WARPEndpoint) Start(stage adapter.StartStage) error {
 
 		ep, ok := underlying.(*Endpoint)
 		if !ok {
-			_ = underlying.Close()
 			return E.New("unexpected WireGuard endpoint type")
 		}
 
-		if err = ep.Start(adapter.StartStateStart); err != nil {
-			_ = ep.Close()
+		underlyingScope := adapter.NewScope(scope.Context(), w.logger)
+		if err = ep.Start(adapter.StartStateInitialize, underlyingScope); err != nil {
+			_ = underlyingScope.Close()
+			return err
+		}
+		if err = ep.Start(adapter.StartStateStart, underlyingScope); err != nil {
+			_ = underlyingScope.Close()
 			return err
 		}
 		w.underlying = ep
+		w.scope = underlyingScope
 		w.started = true
+		scope.Add(w.Close)
 	case adapter.StartStatePostStart:
 		w.access.Lock()
 		defer w.access.Unlock()
@@ -133,13 +140,20 @@ func (w *WARPEndpoint) Start(stage adapter.StartStage) error {
 		if w.ready {
 			return nil
 		}
-		if err := w.underlying.Start(adapter.StartStatePostStart); err != nil {
-			_ = w.underlying.Close()
+		if err := w.underlying.Start(adapter.StartStatePostStart, w.scope); err != nil {
+			_ = w.scope.Close()
+			w.scope = nil
 			w.underlying = nil
 			w.started = false
 			return err
 		}
 		w.ready = true
+	case adapter.StartStateStarted:
+		w.access.RLock()
+		defer w.access.RUnlock()
+		if w.ready {
+			return w.underlying.Start(stage, w.scope)
+		}
 	}
 	return nil
 }
@@ -153,12 +167,13 @@ func (w *WARPEndpoint) Close() error {
 	w.closed = true
 	w.started = false
 	w.ready = false
-	underlying := w.underlying
 	w.underlying = nil
-	if underlying == nil {
+	underlyingScope := w.scope
+	w.scope = nil
+	if underlyingScope == nil {
 		return nil
 	}
-	return underlying.Close()
+	return underlyingScope.Close()
 }
 
 func (w *WARPEndpoint) acquire() (*Endpoint, func(), bool) {

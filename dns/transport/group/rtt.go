@@ -182,6 +182,7 @@ func (e *defaultRTTEstimator) Sorted(tags []string) []string {
 		score     float64
 		failures  int
 		hasSample bool
+		halfOpen  bool
 	}
 	snaps := make([]snapshot, len(tags))
 	for i, tag := range tags {
@@ -198,6 +199,8 @@ func (e *defaultRTTEstimator) Sorted(tags []string) []string {
 			}
 			if !entry.circuitUntil.IsZero() && e.now().Before(entry.circuitUntil) {
 				snaps[i].failures = max(snaps[i].failures, e.failureThreshold)
+			} else if !entry.circuitUntil.IsZero() && entry.inflight == 0 {
+				snaps[i].halfOpen = true
 			}
 		}
 	}
@@ -205,6 +208,9 @@ func (e *defaultRTTEstimator) Sorted(tags []string) []string {
 
 	sort.SliceStable(snaps, func(i, j int) bool {
 		a, b := snaps[i], snaps[j]
+		if a.halfOpen != b.halfOpen {
+			return a.halfOpen
+		}
 		// Servers with too many consecutive failures sink to the bottom.
 		aFailed := a.failures >= e.failureThreshold
 		bFailed := b.failures >= e.failureThreshold

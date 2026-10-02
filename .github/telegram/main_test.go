@@ -133,6 +133,20 @@ func TestValidateFilesSkipsDirectories(t *testing.T) {
 	}
 }
 
+func TestUploadRejectsPartialArtifactSet(t *testing.T) {
+	dir := t.TempDir()
+	valid := filepath.Join(dir, "sing-box-linux-amd64.zip")
+	createTestZip(t, valid, map[string]string{"sing-box": "binary"})
+	missing := filepath.Join(dir, "sing-box-linux-arm64.zip")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := NewUploader(Config{}).Upload(ctx, []string{valid, missing})
+	if err == nil || !strings.Contains(err.Error(), "1 of 2") {
+		t.Fatalf("Upload() error = %v, want invalid artifact count", err)
+	}
+}
+
 func TestGetThreadsUsesValidatedEnv(t *testing.T) {
 	u := NewUploader(Config{})
 
