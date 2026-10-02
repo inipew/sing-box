@@ -193,14 +193,14 @@ func (s *Server) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 					}
 				}
 			}
-			s.checkAndDownloadExternalUI(false)
-			if s.externalUIUpdateInterval != 0 && !s.lastUpdated.IsZero() {
+			s.checkAndDownloadExternalUI(scope.Context(), false)
+			if s.externalUI != "" && s.externalUIUpdateInterval != 0 {
 				s.ticker = time.NewTicker(s.externalUIUpdateInterval)
 				scope.Add(func() error {
 					s.ticker.Stop()
 					return nil
 				})
-				go s.loopUpdate()
+				go s.loopUpdate(scope.Context())
 			}
 			var (
 				listener net.Listener
@@ -230,17 +230,20 @@ func (s *Server) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	return nil
 }
 
-func (s *Server) loopUpdate() {
-	if time.Since(s.lastUpdated) > s.externalUIUpdateInterval {
-		s.checkAndDownloadExternalUI(true)
+func (s *Server) loopUpdate(ctx context.Context) {
+	if !s.lastUpdated.IsZero() && time.Since(s.lastUpdated) > s.externalUIUpdateInterval && ctx.Err() == nil {
+		s.checkAndDownloadExternalUI(ctx, true)
 	}
 	for {
 		runtime.GC()
 		select {
-		case <-s.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-s.ticker.C:
-			s.checkAndDownloadExternalUI(true)
+			if ctx.Err() != nil {
+				return
+			}
+			s.checkAndDownloadExternalUI(ctx, true)
 		}
 	}
 }

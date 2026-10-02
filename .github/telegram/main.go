@@ -57,10 +57,10 @@ const (
 	tagsMaxLen      = 300
 
 	// HTML fragment lengths used in caption budget accounting.
-	commitHeaderHTML = "🔨 <b>Commit:</b>\n"      // 21 runes
-	cherryHeaderHTML = "🍒 <b>Cherry-pick:</b>\n" // 24 runes
-	moreTagsHTML     = "\n<i>...and more tags</i>"    // 23 runes
-	separatorHTML    = "\n\n"                         // 2 runes
+	commitHeaderHTML = "🔨 <b>Commit:</b>\n"        // 21 runes
+	cherryHeaderHTML = "🍒 <b>Cherry-pick:</b>\n"   // 24 runes
+	moreTagsHTML     = "\n<i>...and more tags</i>" // 23 runes
+	separatorHTML    = "\n\n"                      // 2 runes
 
 	progressInterval = 5 * time.Second
 )
@@ -1581,6 +1581,9 @@ func (u *Uploader) Upload(ctx context.Context, filePaths []string) error {
 	valid := u.validateFiles(filePaths)
 	if len(valid) == 0 {
 		return errors.New("no valid files to upload")
+	}
+	if len(valid) != len(filePaths) {
+		return fmt.Errorf("invalid upload files: only %d of %d artifacts passed validation", len(valid), len(filePaths))
 	}
 
 	chunks := u.chunked(valid, albumLimit)
