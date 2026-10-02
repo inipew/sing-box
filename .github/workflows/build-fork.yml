@@ -55,12 +55,15 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/**"
+      - ".github/scripts/**"
   pull_request:
     branches: [main, master]
     paths:
       - "**.go"
       - "go.mod"
       - "go.sum"
+      - ".github/workflows/**"
+      - ".github/scripts/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -97,21 +100,16 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Detect changes
         id: detect
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Manual dispatch — force_build: ${{ inputs.force_build }}"
-          elif git diff --name-only HEAD~1 | grep -qE '\.(go|mod|sum)$|\.github/workflows/'; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Relevant files changed — proceeding with build"
-          else
-            echo "should_build=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No relevant files changed — skipping build"
-          fi
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash .github/scripts/detect-build-changes.sh
 
   # Resolve version string
   get-version:
@@ -435,7 +433,7 @@ jobs:
   upload-telegram:
     name: Upload to Telegram
     runs-on: ubuntu-latest
-    needs: [get-version, build-binary]
+    needs: [get-version, select-targets, build-binary]
     if: |
       always() &&
       needs.build-binary.result == 'success' &&
@@ -485,11 +483,22 @@ jobs:
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           VERSION: ${{ needs.get-version.outputs.version }}
           TAGS: ${{ env.BUILD_TAGS }}
+          MATRIX_JSON: ${{ needs.select-targets.outputs.matrix }}
+          VERSION_CLEAN: ${{ needs.get-version.outputs.version_clean }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           chmod +x ./.github/telegram/sendtotelegram
-          mapfile -t FILES < <(find bin -name "sing-box-*.zip" -type f | sort)
-          [[ ${#FILES[@]} -eq 0 ]] && { echo "::error::No zip files found"; exit 1; }
+          mapfile -t TARGETS < <(python3 -c 'import json, os; print("\n".join(item["output"] for item in json.loads(os.environ["MATRIX_JSON"])["include"]))')
+          [[ ${#TARGETS[@]} -eq 0 ]] && { echo "::error::No build targets found"; exit 1; }
+
+          FILES=()
+          for target in "${TARGETS[@]}"; do
+            archive="bin/sing-box-${VERSION_CLEAN}-${target}.zip"
+            checksum="bin/SHA256SUMS-${target}.txt"
+            [[ -f "$archive" ]] || { echo "::error::Missing archive: $archive"; exit 1; }
+            [[ -f "$checksum" ]] || { echo "::error::Missing checksum: $checksum"; exit 1; }
+            FILES+=("$archive")
+          done
 
           echo "Uploading ${#FILES[@]} file(s) as single album…"
           ./.github/telegram/sendtotelegram "${FILES[@]}"

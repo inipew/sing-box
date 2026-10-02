@@ -2,6 +2,7 @@ package group
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +27,7 @@ const (
 var (
 	_ adapter.DNSTransport                   = (*GroupTransport)(nil)
 	_ adapter.DNSTransportWithResponseCheck  = (*GroupTransport)(nil)
+	_ adapter.DNSTransportWithEnvironment    = (*GroupTransport)(nil)
 	_ adapter.DNSGroupSnapshotProvider       = (*GroupTransport)(nil)
 	_ adapter.DNSTransportWithDialerOverride = (*GroupTransport)(nil)
 	_ adapter.IdleConnectionKeeper           = (*GroupTransport)(nil)
@@ -65,6 +67,7 @@ type groupRuntime struct {
 	access     sync.Mutex
 	closing    bool
 	waiter     sync.WaitGroup
+	workers    *sync.WaitGroup
 }
 
 func (r *groupRuntime) acquire() bool {
@@ -137,6 +140,26 @@ func (t *GroupTransport) Tag() string  { return t.tag }
 
 func (t *GroupTransport) Dependencies() []string {
 	return append([]string(nil), t.memberTags...)
+}
+
+func (t *GroupTransport) Environment() []string {
+	runtime := t.runtime.Load()
+	if runtime == nil || !runtime.acquire() {
+		return nil
+	}
+	defer runtime.release()
+	var environment []string
+	for _, member := range runtime.members {
+		withEnvironment, ok := member.(adapter.DNSTransportWithEnvironment)
+		if !ok {
+			continue
+		}
+		prefix := strconv.Itoa(len(member.Tag())) + ":" + member.Tag()
+		for _, entry := range withEnvironment.Environment() {
+			environment = append(environment, prefix+entry)
+		}
+	}
+	return environment
 }
 
 func (t *GroupTransport) References() []string {
@@ -219,11 +242,12 @@ func (t *GroupTransport) Start(stage adapter.StartStage, scope *adapter.Scope) e
 	}
 
 	var dispatcher Dispatcher
+	workerWaiter := new(sync.WaitGroup)
 	switch t.modeStr {
 	case string(executionParallel):
-		dispatcher = &ConcurrentDispatcher{Tag: t.tag, Logger: t.logger, MaxRetries: t.maxRetries, MaxInflight: t.policy.maxInflight, RetryRCodes: t.policy.retryRCodes}
+		dispatcher = &ConcurrentDispatcher{Tag: t.tag, Logger: t.logger, MaxRetries: t.maxRetries, MaxInflight: t.policy.maxInflight, RetryRCodes: t.policy.retryRCodes, workers: workerWaiter}
 	case string(executionHedge):
-		dispatcher = &FallbackDispatcher{Tag: t.tag, Logger: t.logger, FallbackDelay: t.fallbackDelay, MaxRetries: t.maxRetries, MaxInflight: t.policy.maxInflight, RetryRCodes: t.policy.retryRCodes}
+		dispatcher = &FallbackDispatcher{Tag: t.tag, Logger: t.logger, FallbackDelay: t.fallbackDelay, MaxRetries: t.maxRetries, MaxInflight: t.policy.maxInflight, RetryRCodes: t.policy.retryRCodes, workers: workerWaiter}
 	default:
 		dispatcher = &SequentialDispatcher{Tag: t.tag, Logger: t.logger, MaxRetries: t.maxRetries, RetryRCodes: t.policy.retryRCodes}
 	}
@@ -262,6 +286,7 @@ func (t *GroupTransport) Start(stage adapter.StartStage, scope *adapter.Scope) e
 		strategy:   strategy,
 		dispatcher: dispatcher,
 		owned:      clonedMembers,
+		workers:    workerWaiter,
 	}
 	for _, member := range members {
 		if _, exists := runtime.byTag[member.Tag()]; exists {
@@ -335,6 +360,7 @@ func (t *GroupTransport) Close() error {
 		runtime.health.Close()
 	}
 	runtime.waiter.Wait()
+	runtime.workers.Wait()
 	return closeOwnedTransports(nil, runtime.owned)
 }
 
@@ -394,6 +420,7 @@ func (t *GroupTransport) ExchangeWithResponseCheck(ctx context.Context, message 
 	if len(selected) == 0 {
 		return nil, E.New("dns group[", t.tag, "]: strategy returned no servers")
 	}
+	selected = prioritizeHalfOpen(selected, t.rtt.AllSnapshots())
 
 	queryCtx, cancelQuery := context.WithCancel(ctx)
 	stopRuntimeCancel := context.AfterFunc(runtime.ctx, cancelQuery)
@@ -402,6 +429,23 @@ func (t *GroupTransport) ExchangeWithResponseCheck(ctx context.Context, message 
 		cancelQuery()
 	}()
 	return runtime.dispatcher.Dispatch(queryCtx, message, selected, runtime.byTag, t.rtt, checker)
+}
+
+func prioritizeHalfOpen(selected []string, snapshots map[string]RTTSnapshot) []string {
+	for index, tag := range selected {
+		snapshot, ok := snapshots[tag]
+		if !ok || snapshot.State != "half_open" || snapshot.Inflight != 0 {
+			continue
+		}
+		if index == 0 {
+			return selected
+		}
+		result := append([]string(nil), selected...)
+		copy(result[1:index+1], selected[:index])
+		result[0] = tag
+		return result
+	}
+	return selected
 }
 
 func availableTags(tags []string, estimator RTTEstimator) []string {
