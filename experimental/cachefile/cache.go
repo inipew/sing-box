@@ -503,7 +503,7 @@ func (c *CacheFile) SaveRuleSet(tag string, set *adapter.SavedBinary) error {
 
 func (c *CacheFile) LoadExternalUI(tag string) *adapter.SavedBinary {
 	var savedSet adapter.SavedBinary
-	err := c.DB.View(func(t *bbolt.Tx) error {
+	err := c.view(func(t *bbolt.Tx) error {
 		bucket := c.bucket(t, bucketExternalUI)
 		if bucket == nil {
 			return os.ErrNotExist
@@ -521,7 +521,7 @@ func (c *CacheFile) LoadExternalUI(tag string) *adapter.SavedBinary {
 }
 
 func (c *CacheFile) SaveExternalUI(tag string, info *adapter.SavedBinary) error {
-	return c.DB.Batch(func(t *bbolt.Tx) error {
+	return c.batch(func(t *bbolt.Tx) error {
 		bucket, err := c.createBucket(t, bucketExternalUI)
 		if err != nil {
 			return err
