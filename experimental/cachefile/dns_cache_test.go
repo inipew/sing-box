@@ -92,3 +92,21 @@ func TestDeleteDNSCacheQueuesAfterMatchingWritingValue(t *testing.T) {
 	require.Equal(t, 1, cache.pending.count)
 	require.Equal(t, len(key.QuestionName)+len(corrupt), cache.pending.size)
 }
+
+func TestExternalUIStorage(t *testing.T) {
+	cache := newDNSCacheFile(t)
+	now := time.Now().Truncate(time.Second)
+	info := &adapter.SavedBinary{
+		LastUpdated: now,
+		LastEtag:    "etag-12345",
+		Content:     []byte("test-content"),
+	}
+	require.NoError(t, cache.SaveExternalUI("ExternalUI", info))
+
+	loaded := cache.LoadExternalUI("ExternalUI")
+	require.NotNil(t, loaded)
+	require.Equal(t, "etag-12345", loaded.LastEtag)
+	require.True(t, now.Equal(loaded.LastUpdated))
+
+	require.Nil(t, cache.LoadExternalUI("non-existent"))
+}
