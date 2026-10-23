@@ -12,6 +12,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	tun "github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common/json/badoption"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/stretchr/testify/require"
@@ -205,4 +206,26 @@ func TestWARPPostStartRequiresStart(t *testing.T) {
 	err := ep.Start(adapter.StartStatePostStart, adapter.NewScope(context.Background(), ep.logger))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "has not completed start stage")
+}
+
+func TestWARPInterfacesAndUpstreamPort(t *testing.T) {
+	ep := &WARPEndpoint{}
+
+	// Test adapter.OutboundWithMultiplex
+	multiplexOutbound, ok := any(ep).(adapter.OutboundWithMultiplex)
+	require.True(t, ok, "WARPEndpoint must implement adapter.OutboundWithMultiplex")
+	require.True(t, multiplexOutbound.MultiplexEnabled())
+
+	// Test tun.Port
+	_, ok = any(ep).(tun.Port)
+	require.True(t, ok, "WARPEndpoint must implement tun.Port")
+
+	// UpstreamPort when not ready
+	require.Nil(t, ep.UpstreamPort())
+
+	// UpstreamPort when ready
+	underlying := &Endpoint{}
+	ep.underlying = underlying
+	ep.ready = true
+	require.Same(t, underlying, ep.UpstreamPort())
 }
