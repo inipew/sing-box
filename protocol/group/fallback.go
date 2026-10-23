@@ -30,7 +30,10 @@ func RegisterFallback(registry *outbound.Registry) {
 	outbound.Register[option.FallbackOutboundOptions](registry, C.TypeFallback, NewFallback)
 }
 
-var _ adapter.OutboundGroup = (*Fallback)(nil)
+var (
+	_ adapter.OutboundGroup = (*Fallback)(nil)
+	_ adapter.Referrer      = (*Fallback)(nil)
+)
 
 type Fallback struct {
 	outbound.Adapter
@@ -102,6 +105,32 @@ func (s *Fallback) AttachConnection(closer io.Closer) func() {
 
 func (s *Fallback) All() []string {
 	return s.tags
+}
+
+func (s *Fallback) References() []string {
+	group := s.group
+	if group == nil {
+		return nil
+	}
+	var references []string
+	tcpOutbound := group.selectedOutboundTCP
+	if tcpOutbound == nil {
+		tcpOutbound, _ = group.Select(N.NetworkTCP)
+	}
+	if tcpOutbound != nil {
+		references = append(references, tcpOutbound.Tag())
+	}
+	udpOutbound := group.selectedOutboundUDP
+	if udpOutbound == nil {
+		udpOutbound, _ = group.Select(N.NetworkUDP)
+	}
+	if udpOutbound != nil && (tcpOutbound == nil || udpOutbound.Tag() != tcpOutbound.Tag()) {
+		references = append(references, udpOutbound.Tag())
+	}
+	if len(references) == 0 && len(s.tags) > 0 {
+		return s.tags[:1]
+	}
+	return references
 }
 
 func (s *Fallback) URLTest(ctx context.Context) (map[string]uint16, error) {
