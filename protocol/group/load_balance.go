@@ -6,6 +6,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -67,6 +68,11 @@ func NewLoadBalance(ctx context.Context, router adapter.Router, logger log.Conte
 	}
 	if len(outbound.tags) == 0 {
 		return nil, E.New("missing tags")
+	}
+	for i, tag := range outbound.tags {
+		if slices.Contains(outbound.tags[:i], tag) {
+			return nil, E.New("duplicate tag: ", tag)
+		}
 	}
 
 	group, err := NewLoadBalanceGroup(ctx, outbound.outbound, logger, nil, outbound.link, outbound.interval, outbound.idleTimeout, outbound.timeout, options.Strategy, outbound.interruptExternalConnections)
