@@ -24,6 +24,8 @@ var (
 	_ adapter.Endpoint                    = (*WARPEndpoint)(nil)
 	_ adapter.OutboundWithPreferredRoutes = (*WARPEndpoint)(nil)
 	_ adapter.InterfaceUpdateListener     = (*WARPEndpoint)(nil)
+	_ adapter.OutboundWithMultiplex       = (*WARPEndpoint)(nil)
+	_ tun.Port                            = (*WARPEndpoint)(nil)
 	_ dialer.PacketDialerWithDestination  = (*WARPEndpoint)(nil)
 )
 
@@ -194,6 +196,10 @@ func (w *WARPEndpoint) InterfaceUpdated(ctx context.Context) {
 	underlying.InterfaceUpdated(ctx)
 }
 
+func (w *WARPEndpoint) MultiplexEnabled() bool {
+	return true
+}
+
 func (w *WARPEndpoint) PreMatchFlow(network string, destination netip.Addr) adapter.PreMatchAction {
 	underlying, release, loaded := w.acquire()
 	if !loaded {
@@ -219,6 +225,15 @@ func (w *WARPEndpoint) PortMTU() uint32 {
 	}
 	defer release()
 	return underlying.PortMTU()
+}
+
+func (w *WARPEndpoint) UpstreamPort() any {
+	underlying, release, loaded := w.acquire()
+	if !loaded {
+		return nil
+	}
+	defer release()
+	return underlying
 }
 
 func (w *WARPEndpoint) AttachReturn(returnPath tun.Return) error {
