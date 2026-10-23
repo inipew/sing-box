@@ -33,7 +33,10 @@ func RegisterLoadBalance(registry *outbound.Registry) {
 	outbound.Register[option.LoadBalanceOutboundOptions](registry, C.TypeLoadBalance, NewLoadBalance)
 }
 
-var _ adapter.OutboundGroup = (*LoadBalance)(nil)
+var (
+	_ adapter.OutboundGroup = (*LoadBalance)(nil)
+	_ adapter.Referrer      = (*LoadBalance)(nil)
+)
 
 type LoadBalance struct {
 	outbound.Adapter
@@ -104,6 +107,40 @@ func (s *LoadBalance) AttachConnection(closer io.Closer) func() {
 
 func (s *LoadBalance) All() []string {
 	return s.tags
+}
+
+func (s *LoadBalance) References() []string {
+	group := s.group
+	if group == nil {
+		return nil
+	}
+	var references []string
+	seen := make(map[string]bool)
+
+	for _, network := range []string{N.NetworkTCP, N.NetworkUDP} {
+		healthy := group.getHealthyOutbounds(network)
+		if len(healthy) == 0 {
+			if fallback := group.fallbackOutbound(network); fallback != nil {
+				tag := fallback.Tag()
+				if !seen[tag] {
+					seen[tag] = true
+					references = append(references, tag)
+				}
+			}
+		} else {
+			for _, outbound := range healthy {
+				tag := outbound.Tag()
+				if !seen[tag] {
+					seen[tag] = true
+					references = append(references, tag)
+				}
+			}
+		}
+	}
+	if len(references) == 0 && len(s.tags) > 0 {
+		return s.tags[:1]
+	}
+	return references
 }
 
 func (s *LoadBalance) URLTest(ctx context.Context) (map[string]uint16, error) {
