@@ -173,3 +173,17 @@ func TestLoadBalanceReferences(t *testing.T) {
 	history.StoreURLTestHistory("node2", &adapter.URLTestHistory{Time: time.Now(), Delay: 70})
 	require.ElementsMatch(t, []string{"node1", "node2", "node3"}, referrer.References())
 }
+
+func TestFallbackRejectsDuplicateTags(t *testing.T) {
+	logger := log.NewNOPFactory().Logger()
+	_, err := NewFallback(context.Background(), nil, logger, "fallback", option.FallbackOutboundOptions{Outbounds: []string{"node1", "node2", "node1"}})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duplicate tag: node1")
+}
+
+func TestLoadBalanceRejectsDuplicateTags(t *testing.T) {
+	logger := log.NewNOPFactory().Logger()
+	_, err := NewLoadBalance(context.Background(), nil, logger, "balance", option.LoadBalanceOutboundOptions{Outbounds: []string{"node1", "node2", "node2"}})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duplicate tag: node2")
+}
