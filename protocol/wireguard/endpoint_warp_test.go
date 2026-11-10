@@ -301,3 +301,46 @@ func TestWARPNATAndOnDemandOptionsTranslation(t *testing.T) {
 	require.Equal(t, uint32(1024), wgOpts.UDPNATMax)
 	require.True(t, wgOpts.OnDemand)
 }
+
+func TestWARPEndpointHostPortSanitization(t *testing.T) {
+	privKey, err := GeneratePrivateKey()
+	require.NoError(t, err)
+
+	// Case 1: Server configured with domain:port in config
+	cfg := &WARPConfig{
+		PrivateKey: privKey,
+		Server:     "engage.cloudflareclient.com:2408",
+	}
+	wgOpts := cfg.WireGuardEndpointOptions()
+	require.Len(t, wgOpts.Peers, 1)
+	require.Equal(t, "engage.cloudflareclient.com", wgOpts.Peers[0].Address)
+	require.Equal(t, uint16(2408), wgOpts.Peers[0].Port)
+
+	// Ensure ParseSocksaddrHostPort produces clean FQDN without port
+	endpoint := M.ParseSocksaddrHostPort(wgOpts.Peers[0].Address, wgOpts.Peers[0].Port)
+	require.Equal(t, "engage.cloudflareclient.com", endpoint.Fqdn)
+	require.Equal(t, uint16(2408), endpoint.Port)
+
+	// Case 2: Static profile provider with server:port
+	staticOpts := option.WireGuardWARPEndpointOptions{
+		PrivateKey: privKey.String(),
+		Address: badoption.Listable[netip.Prefix]{
+			netip.MustParsePrefix("172.16.0.2/32"),
+		},
+		Server: "engage.cloudflareclient.com:2408",
+	}
+	provider := NewStaticProfileProvider(staticOpts)
+	loadedCfg, err := provider.Load(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "engage.cloudflareclient.com", loadedCfg.Server)
+	require.Equal(t, uint16(2408), loadedCfg.ServerPort)
+
+	// Case 3: IPv6 host:port
+	cfgIPv6 := &WARPConfig{
+		PrivateKey: privKey,
+		Server:     "[2606:4700:d0::a29f:c001]:2408",
+	}
+	wgOptsIPv6 := cfgIPv6.WireGuardEndpointOptions()
+	require.Equal(t, "2606:4700:d0::a29f:c001", wgOptsIPv6.Peers[0].Address)
+	require.Equal(t, uint16(2408), wgOptsIPv6.Peers[0].Port)
+}

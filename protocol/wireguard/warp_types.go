@@ -3,7 +3,9 @@
 package wireguard
 
 import (
+	"net"
 	"net/netip"
+	"strconv"
 	"time"
 
 	"github.com/sagernet/sing-box/option"
@@ -81,11 +83,20 @@ func (c *WARPConfig) WireGuardEndpointOptions() option.WireGuardEndpointOptions 
 	}
 
 	serverHost := c.Server
+	serverPort := c.ServerPort
+	if host, portStr, splitErr := net.SplitHostPort(serverHost); splitErr == nil {
+		serverHost = host
+		if serverPort == 0 {
+			if p, parseErr := strconv.ParseUint(portStr, 10, 16); parseErr == nil {
+				serverPort = uint16(p)
+			}
+		}
+	}
+
 	if serverHost == "" {
 		serverHost = DefaultWarpEndpointHost
 	}
 
-	serverPort := c.ServerPort
 	if serverPort == 0 {
 		serverPort = DefaultWarpEndpointPort
 	}

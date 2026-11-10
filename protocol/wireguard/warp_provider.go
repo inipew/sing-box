@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -73,14 +74,25 @@ func (p *StaticProfileProvider) Load(ctx context.Context) (*WARPConfig, error) {
 		return nil, E.New("missing local address in static WARP config")
 	}
 
+	serverHost := options.Server
+	serverPort := options.ServerPort
+	if host, portStr, splitErr := net.SplitHostPort(serverHost); splitErr == nil {
+		serverHost = host
+		if serverPort == 0 {
+			if p, parseErr := strconv.ParseUint(portStr, 10, 16); parseErr == nil {
+				serverPort = uint16(p)
+			}
+		}
+	}
+
 	return &WARPConfig{
 		PrivateKey:                  privateKey,
 		PeerPublicKey:               peerPublicKey,
 		PreSharedKey:                preSharedKey,
 		Address:                     options.Address,
 		Reserved:                    reserved,
-		Server:                      options.Server,
-		ServerPort:                  options.ServerPort,
+		Server:                      serverHost,
+		ServerPort:                  serverPort,
 		MTU:                         options.MTU,
 		Workers:                     options.Workers,
 		UDPTimeout:                  time.Duration(options.UDPTimeout),
@@ -244,6 +256,14 @@ func (p *CloudflareProfileProvider) Load(ctx context.Context) (*WARPConfig, erro
 		serverHost = storedProfile.Tunnel.PeerEndpoint
 		if len(storedProfile.Tunnel.PeerPorts) > 0 {
 			serverPort = uint16(storedProfile.Tunnel.PeerPorts[rand.Intn(len(storedProfile.Tunnel.PeerPorts))])
+		}
+	}
+	if host, portStr, splitErr := net.SplitHostPort(serverHost); splitErr == nil {
+		serverHost = host
+		if serverPort == 0 {
+			if p, parseErr := strconv.ParseUint(portStr, 10, 16); parseErr == nil {
+				serverPort = uint16(p)
+			}
 		}
 	}
 

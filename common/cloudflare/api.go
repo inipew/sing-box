@@ -9,7 +9,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/sagernet/sing/common"
@@ -104,9 +106,18 @@ func (c *Client) Register(ctx context.Context, privateKeyBase64, publicKeyBase64
 	var peerEndpoint string
 	var peerPorts []int
 	if len(regResp.Config.Peers) > 0 {
-		peerPublicKey = regResp.Config.Peers[0].PublicKey
-		peerEndpoint = regResp.Config.Peers[0].Endpoint.Host
-		peerPorts = regResp.Config.Peers[0].Endpoint.Ports
+		peer := regResp.Config.Peers[0]
+		peerPublicKey = peer.PublicKey
+		peerEndpoint = peer.Endpoint.Host
+		if host, portStr, splitErr := net.SplitHostPort(peerEndpoint); splitErr == nil {
+			peerEndpoint = host
+			if p, parseErr := strconv.Atoi(portStr); parseErr == nil && len(peer.Endpoint.Ports) == 0 {
+				peerPorts = []int{p}
+			}
+		}
+		if len(peerPorts) == 0 {
+			peerPorts = peer.Endpoint.Ports
+		}
 	}
 
 	profile := &StoredProfile{
