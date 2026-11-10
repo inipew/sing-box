@@ -20,7 +20,11 @@
   "mtu": 1280,
   "udp_timeout": "5m",
   "persistent_keepalive_interval": 0,
+
+  ... // UDP NAT 字段
+
   "workers": 4,
+  "on_demand": false,
   "provision": {
     "license": "",
     "cache_path": "",
@@ -82,6 +86,14 @@ WireGuard 保活间隔（秒）。默认 `25` 秒。
 #### workers
 
 WireGuard 工作线程数。
+
+#### on_demand
+
+允许端点在空闲或系统暂停时断开连接。
+
+### UDP NAT 字段
+
+详情请参阅 [UDP NAT 字段](/zh/configuration/shared/udp-nat/) (`udp_mapping`, `udp_filtering`, `udp_nat_max`)。
 
 #### bootstrap_resolver
 

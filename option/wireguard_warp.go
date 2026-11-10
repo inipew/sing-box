@@ -14,8 +14,12 @@ type WireGuardWARPEndpointOptions struct {
 	Address    badoption.Listable[netip.Prefix] `json:"address,omitempty"`
 	PrivateKey string                           `json:"private_key,omitempty"`
 	ListenPort uint16                           `json:"listen_port,omitempty"`
-	UDPTimeout badoption.Duration               `json:"udp_timeout,omitempty"`
-	Workers    int                              `json:"workers,omitempty"`
+	UDPTimeout   badoption.Duration               `json:"udp_timeout,omitempty"`
+	UDPMapping   UDPNATBehavior                   `json:"udp_mapping,omitempty"`
+	UDPFiltering UDPNATBehavior                   `json:"udp_filtering,omitempty"`
+	UDPNATMax    uint32                           `json:"udp_nat_max,omitempty"`
+	Workers      int                              `json:"workers,omitempty"`
+	OnDemand     bool                             `json:"on_demand,omitempty"`
 
 	// Peer Configuration
 	Server                      string  `json:"server,omitempty"`
@@ -34,4 +38,14 @@ type WARPProvisionOptions struct {
 	License   string `json:"license,omitempty"`
 	CachePath string `json:"cache_path,omitempty"`
 	Recreate  bool   `json:"recreate,omitempty"`
+}
+
+var _ DialerOptionsWrapper = (*WireGuardWARPEndpointOptions)(nil)
+
+func (o *WireGuardWARPEndpointOptions) TakeDialerOptions() DialerOptions {
+	dialerOptions := o.DialerOptions
+	if dialerOptions.DomainResolver == nil && o.BootstrapResolver != nil {
+		dialerOptions.DomainResolver = o.BootstrapResolver
+	}
+	return dialerOptions
 }

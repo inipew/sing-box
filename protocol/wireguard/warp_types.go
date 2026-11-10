@@ -57,7 +57,11 @@ type WARPConfig struct {
 	MTU                         uint32
 	Workers                     int
 	UDPTimeout                  time.Duration
+	UDPMapping                  option.UDPNATBehavior
+	UDPFiltering                option.UDPNATBehavior
+	UDPNATMax                   uint32
 	PersistentKeepaliveInterval uint16
+	OnDemand                    bool
 
 	System            bool
 	Name              string
@@ -120,7 +124,11 @@ func (c *WARPConfig) WireGuardEndpointOptions() option.WireGuardEndpointOptions 
 			},
 		},
 		UDPTimeout:    badoption.Duration(c.UDPTimeout),
+		UDPMapping:    c.UDPMapping,
+		UDPFiltering:  c.UDPFiltering,
+		UDPNATMax:     c.UDPNATMax,
 		Workers:       c.Workers,
+		OnDemand:      c.OnDemand,
 		DialerOptions: dialerOptions,
 	}
 }

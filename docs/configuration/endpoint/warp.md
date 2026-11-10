@@ -20,7 +20,11 @@
   "mtu": 1280,
   "udp_timeout": "5m",
   "persistent_keepalive_interval": 0,
+
+  ... // UDP NAT Fields
+
   "workers": 4,
+  "on_demand": false,
   "provision": {
     "license": "",
     "cache_path": "",
@@ -82,6 +86,14 @@ WireGuard persistent keepalive interval in seconds. Default `25` seconds.
 #### workers
 
 The number of WireGuard workers.
+
+#### on_demand
+
+Allow the endpoint to be disconnected when idle or when system is paused.
+
+### UDP NAT Fields
+
+See [UDP NAT Fields](/configuration/shared/udp-nat/) for details (`udp_mapping`, `udp_filtering`, `udp_nat_max`).
 
 #### bootstrap_resolver
 
