@@ -25,6 +25,9 @@ var (
 	_ adapter.OutboundWithPreferredRoutes = (*WARPEndpoint)(nil)
 	_ adapter.InterfaceUpdateListener     = (*WARPEndpoint)(nil)
 	_ adapter.OutboundWithMultiplex       = (*WARPEndpoint)(nil)
+	_ adapter.OnDemandEndpoint            = (*WARPEndpoint)(nil)
+	_ adapter.FlowOutbound                = (*WARPEndpoint)(nil)
+	_ adapter.Referrer                    = (*WARPEndpoint)(nil)
 	_ tun.Port                            = (*WARPEndpoint)(nil)
 	_ dialer.PacketDialerWithDestination  = (*WARPEndpoint)(nil)
 )
@@ -60,9 +63,13 @@ func NewWARPEndpoint(ctx context.Context, router adapter.Router, logger log.Cont
 		}
 		provider = NewStaticProfileProvider(options)
 	} else {
+		dialerOptions := options.DialerOptions
+		if dialerOptions.DomainResolver == nil && options.BootstrapResolver != nil {
+			dialerOptions.DomainResolver = options.BootstrapResolver
+		}
 		outboundDialer, err := dialer.NewWithOptions(dialer.Options{
 			Context:          ctx,
-			Options:          options.DialerOptions,
+			Options:          dialerOptions,
 			RemoteIsDomain:   true,
 			ResolverOnDetour: true,
 		})
@@ -107,7 +114,7 @@ func (w *WARPEndpoint) Start(stage adapter.StartStage, scope *adapter.Scope) err
 		}
 
 		wgOpts := warpConfig.WireGuardEndpointOptions()
-		underlying, err := NewEndpoint(w.ctx, w.router, w.logger, w.Tag(), wgOpts)
+		underlying, err := NewEndpointWithType(w.ctx, w.router, w.logger, w.Tag(), C.TypeWarp, wgOpts)
 		if err != nil {
 			return E.Cause(err, "initialize WireGuard endpoint for WARP")
 		}
@@ -198,6 +205,26 @@ func (w *WARPEndpoint) InterfaceUpdated(ctx context.Context) {
 
 func (w *WARPEndpoint) MultiplexEnabled() bool {
 	return true
+}
+
+func (w *WARPEndpoint) OnDemand() bool {
+	return w.options.OnDemand
+}
+
+func (w *WARPEndpoint) SetKeepIdleConnections(keep bool) {
+	underlying, release, loaded := w.acquire()
+	if !loaded {
+		return
+	}
+	defer release()
+	underlying.SetKeepIdleConnections(keep)
+}
+
+func (w *WARPEndpoint) References() []string {
+	if w.options.Detour == "" {
+		return nil
+	}
+	return []string{w.options.Detour}
 }
 
 func (w *WARPEndpoint) PreMatchFlow(network string, destination netip.Addr) adapter.PreMatchAction {

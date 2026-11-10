@@ -229,3 +229,75 @@ func TestWARPInterfacesAndUpstreamPort(t *testing.T) {
 	ep.ready = true
 	require.Same(t, underlying, ep.UpstreamPort())
 }
+
+func TestWARPLifecycleAndReferrerInterfaces(t *testing.T) {
+	opts := option.WireGuardWARPEndpointOptions{
+		DialerOptions: option.DialerOptions{
+			Detour: "proxy-out",
+			AbstractDialerOptions: option.AbstractDialerOptions{
+				DomainResolver: &option.DomainResolveOptions{Server: "dns-remote"},
+			},
+		},
+		BootstrapResolver: &option.DomainResolveOptions{Server: "dns-bootstrap"},
+		OnDemand:          true,
+	}
+	ep := &WARPEndpoint{options: opts}
+
+	// Test adapter.OnDemandEndpoint
+	onDemandEp, ok := any(ep).(adapter.OnDemandEndpoint)
+	require.True(t, ok, "WARPEndpoint must implement adapter.OnDemandEndpoint")
+	require.True(t, onDemandEp.OnDemand())
+
+	// Test adapter.FlowOutbound
+	_, ok = any(ep).(adapter.FlowOutbound)
+	require.True(t, ok, "WARPEndpoint must implement adapter.FlowOutbound")
+
+	// Test adapter.Referrer
+	referrer, ok := any(ep).(adapter.Referrer)
+	require.True(t, ok, "WARPEndpoint must implement adapter.Referrer")
+	refs := referrer.References()
+	require.Equal(t, []string{"proxy-out"}, refs)
+
+	// Test TakeDialerOptions with DomainResolver
+	dialerOpts := opts.TakeDialerOptions()
+	require.NotNil(t, dialerOpts.DomainResolver)
+	require.Equal(t, "dns-remote", dialerOpts.DomainResolver.Server)
+
+	// Test TakeDialerOptions fallback to BootstrapResolver
+	optsNoDomainResolver := option.WireGuardWARPEndpointOptions{
+		BootstrapResolver: &option.DomainResolveOptions{Server: "dns-bootstrap"},
+	}
+	dialerOptsBootstrap := optsNoDomainResolver.TakeDialerOptions()
+	require.NotNil(t, dialerOptsBootstrap.DomainResolver)
+	require.Equal(t, "dns-bootstrap", dialerOptsBootstrap.DomainResolver.Server)
+}
+
+func TestWARPNATAndOnDemandOptionsTranslation(t *testing.T) {
+	privKey, err := GeneratePrivateKey()
+	require.NoError(t, err)
+
+	opts := option.WireGuardWARPEndpointOptions{
+		PrivateKey: privKey.String(),
+		Address: badoption.Listable[netip.Prefix]{
+			netip.MustParsePrefix("172.16.0.2/32"),
+		},
+		UDPMapping:   option.UDPNATBehaviorEndpointIndependent,
+		UDPFiltering: option.UDPNATBehaviorAddressDependent,
+		UDPNATMax:    1024,
+		OnDemand:     true,
+	}
+
+	provider := NewStaticProfileProvider(opts)
+	cfg, err := provider.Load(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, option.UDPNATBehaviorEndpointIndependent, cfg.UDPMapping)
+	require.Equal(t, option.UDPNATBehaviorAddressDependent, cfg.UDPFiltering)
+	require.Equal(t, uint32(1024), cfg.UDPNATMax)
+	require.True(t, cfg.OnDemand)
+
+	wgOpts := cfg.WireGuardEndpointOptions()
+	require.Equal(t, option.UDPNATBehaviorEndpointIndependent, wgOpts.UDPMapping)
+	require.Equal(t, option.UDPNATBehaviorAddressDependent, wgOpts.UDPFiltering)
+	require.Equal(t, uint32(1024), wgOpts.UDPNATMax)
+	require.True(t, wgOpts.OnDemand)
+}
