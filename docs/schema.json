@@ -928,6 +928,9 @@
         "max_inflight": {
           "type": "integer"
         },
+        "max_concurrent": {
+          "type": "integer"
+        },
         "hedge_delay": {
           "$ref": "#/$defs/Duration"
         },
