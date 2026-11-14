@@ -20,14 +20,16 @@ type sharedConcurrencyTracker struct {
 }
 
 type concurrencyTestTransport struct {
-	tag       string
-	delay     time.Duration
-	blockCh   chan struct{}
-	err       error
-	tracker   *sharedConcurrencyTracker
-	calls     atomic.Int64
-	active    atomic.Int64
-	maxActive atomic.Int64
+	tag         string
+	delay       time.Duration
+	blockCh     chan struct{}
+	enteredCh   chan struct{}
+	err         error
+	tracker     *sharedConcurrencyTracker
+	calls       atomic.Int64
+	active      atomic.Int64
+	maxActive   atomic.Int64
+	enteredOnce sync.Once
 }
 
 func (c *concurrencyTestTransport) Tag() string                                        { return c.tag }
@@ -67,6 +69,12 @@ func (c *concurrencyTestTransport) Exchange(ctx context.Context, msg *mDNS.Msg) 
 		}
 	}
 
+	if c.enteredCh != nil {
+		c.enteredOnce.Do(func() {
+			close(c.enteredCh)
+		})
+	}
+
 	if c.blockCh != nil {
 		select {
 		case <-c.blockCh:
@@ -102,8 +110,7 @@ func (c *concurrencyTestTransport) Exchange(ctx context.Context, msg *mDNS.Msg) 
 func TestHalfOpenAtomicReservation(t *testing.T) {
 	now := time.Unix(100, 0)
 	estimator := newDefaultRTTEstimator(4, 3, 30*time.Second, 5*time.Minute, func() time.Time { return now })
-	reserver, ok := any(estimator).(halfOpenReserver)
-	require.True(t, ok, "defaultRTTEstimator must implement halfOpenReserver")
+	reserver := halfOpenReserver(estimator)
 
 	// 1. Closed circuit: cannot acquire
 	release, acquired := reserver.TryAcquireHalfOpen("server1")
@@ -219,10 +226,35 @@ func TestHalfOpenProbeFailureReopensCircuitWithBackoff(t *testing.T) {
 	rel2()
 }
 
+func TestHealthProbeDoesNotClearQueryToken(t *testing.T) {
+	now := time.Unix(100, 0)
+	estimator := newDefaultRTTEstimator(4, 1, 30*time.Second, 5*time.Minute, func() time.Time { return now })
+	reserver := halfOpenReserver(estimator)
+
+	estimator.RecordFailure("m")
+	now = now.Add(31 * time.Second)
+	require.Equal(t, "half_open", estimator.Snapshot("m").State)
+
+	// User query acquires token
+	release, acquired := reserver.TryAcquireHalfOpen("m")
+	require.True(t, acquired)
+	require.NotNil(t, release)
+
+	// Background health probe records probe result (success or failure)
+	estimator.RecordProbe("m", 15*time.Millisecond, nil)
+
+	// Token must still be held by the user query! Another query must NOT be able to acquire it
+	_, acquiredByOther := reserver.TryAcquireHalfOpen("m")
+	require.False(t, acquiredByOther, "health probe must not clear user query reservation token")
+
+	// Only original query release can clear it
+	release()
+}
+
 func TestConcurrentQueriesOnlyOneHalfOpenProbe(t *testing.T) {
 	now := time.Unix(100, 0)
 	healthy := &concurrencyTestTransport{tag: "healthy"}
-	recovering := &concurrencyTestTransport{tag: "recovering", delay: 30 * time.Millisecond}
+	recovering := &concurrencyTestTransport{tag: "recovering", delay: 25 * time.Millisecond}
 
 	groupTransport := buildGroupTransport(t, "group", "wp2", "hedge", 2, 100*time.Millisecond,
 		[]adapter.DNSTransport{healthy, recovering})
@@ -236,6 +268,11 @@ func TestConcurrentQueriesOnlyOneHalfOpenProbe(t *testing.T) {
 	require.Equal(t, "half_open", estimator.Snapshot("recovering").State)
 
 	const queries = 25
+	type queryResult struct {
+		resp *mDNS.Msg
+		err  error
+	}
+	results := make(chan queryResult, queries)
 	var wg sync.WaitGroup
 	startBarrier := make(chan struct{})
 
@@ -247,26 +284,231 @@ func TestConcurrentQueriesOnlyOneHalfOpenProbe(t *testing.T) {
 			query := new(mDNS.Msg)
 			query.SetQuestion("example.com.", mDNS.TypeA)
 			resp, err := groupTransport.Exchange(context.Background(), query)
-			require.NoError(t, err)
-			require.NotNil(t, resp)
+			results <- queryResult{resp: resp, err: err}
 		}()
 	}
 
 	close(startBarrier)
 	wg.Wait()
+	close(results)
+
+	// Collect and assert on the main test goroutine
+	for res := range results {
+		require.NoError(t, res.err)
+		require.NotNil(t, res.resp)
+	}
 
 	// Exactly ONE recovery probe should have been dispatched to 'recovering'.
-	// All other queries must have used 'healthy'.
 	require.Equal(t, int64(1), recovering.calls.Load(), "recovering member should receive exactly 1 probe query")
 	require.Equal(t, int64(1), recovering.maxActive.Load(), "max concurrent probes on recovering member must be 1")
-	require.GreaterOrEqual(t, healthy.calls.Load(), int64(queries-1), "healthy member should serve the remaining queries")
+	require.GreaterOrEqual(t, healthy.calls.Load(), int64(queries-1), "healthy member should serve remaining queries")
 	require.Equal(t, "closed", estimator.Snapshot("recovering").State)
+}
+
+func TestSingleMemberHalfOpenExclusiveProbe(t *testing.T) {
+	now := time.Unix(100, 0)
+	recoveringBlock := make(chan struct{})
+	recoveringEntered := make(chan struct{})
+	recovering := &concurrencyTestTransport{tag: "recovering", blockCh: recoveringBlock, enteredCh: recoveringEntered}
+
+	groupTransport := buildGroupTransport(t, "group", "first", "sequential", 1, 0,
+		[]adapter.DNSTransport{recovering})
+
+	estimator := newDefaultRTTEstimator(4, 1, time.Minute, 5*time.Minute, func() time.Time { return now })
+	estimator.RecordFailure("recovering")
+	now = now.Add(time.Minute + time.Second)
+	groupTransport.rtt = estimator
+
+	require.Equal(t, "half_open", estimator.Snapshot("recovering").State)
+
+	// Launch Query 1 which takes the exclusive probe and blocks
+	type qResult struct {
+		resp *mDNS.Msg
+		err  error
+	}
+	q1Res := make(chan qResult, 1)
+	go func() {
+		query := new(mDNS.Msg)
+		query.SetQuestion("example.com.", mDNS.TypeA)
+		resp, err := groupTransport.Exchange(context.Background(), query)
+		q1Res <- qResult{resp: resp, err: err}
+	}()
+
+	// Wait deterministically until Query 1 enters Exchange on the recovering transport
+	<-recoveringEntered
+
+	// Concurrent queries arrive while Query 1 is in-flight: they must NOT send to recovering
+	const concurrentQueries = 10
+	results := make(chan qResult, concurrentQueries)
+	var wg sync.WaitGroup
+
+	for range concurrentQueries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			query := new(mDNS.Msg)
+			query.SetQuestion("example.com.", mDNS.TypeA)
+			resp, err := groupTransport.Exchange(context.Background(), query)
+			results <- qResult{resp: resp, err: err}
+		}()
+	}
+
+	wg.Wait()
+	close(results)
+
+	// All concurrent queries must fail fast without sending to recovering
+	for res := range results {
+		require.Error(t, res.err)
+		require.Contains(t, res.err.Error(), "all member circuits are open")
+	}
+
+	// Unblock Query 1
+	close(recoveringBlock)
+	res1 := <-q1Res
+	require.NoError(t, res1.err)
+	require.NotNil(t, res1.resp)
+
+	// Recovering member received EXACTLY 1 query across all attempts
+	require.Equal(t, int64(1), recovering.calls.Load(), "single-member group must allow exactly 1 probe while half-open")
+}
+
+func TestAllMembersHalfOpenExclusiveProbes(t *testing.T) {
+	now := time.Unix(100, 0)
+	blockCh := make(chan struct{})
+	entered1 := make(chan struct{})
+	entered2 := make(chan struct{})
+	r1 := &concurrencyTestTransport{tag: "r1", blockCh: blockCh, enteredCh: entered1}
+	r2 := &concurrencyTestTransport{tag: "r2", blockCh: blockCh, enteredCh: entered2}
+
+	groupTransport := buildGroupTransport(t, "group", "round_robin", "sequential", 2, 0,
+		[]adapter.DNSTransport{r1, r2})
+
+	estimator := newDefaultRTTEstimator(4, 1, time.Minute, 5*time.Minute, func() time.Time { return now })
+	estimator.RecordFailure("r1")
+	estimator.RecordFailure("r2")
+	now = now.Add(time.Minute + time.Second)
+	groupTransport.rtt = estimator
+
+	require.Equal(t, "half_open", estimator.Snapshot("r1").State)
+	require.Equal(t, "half_open", estimator.Snapshot("r2").State)
+
+	type qResult struct {
+		resp *mDNS.Msg
+		err  error
+	}
+	resChan := make(chan qResult, 12)
+
+	// Launch Query 1 (will probe r1)
+	go func() {
+		query := new(mDNS.Msg)
+		query.SetQuestion("example.com.", mDNS.TypeA)
+		resp, err := groupTransport.Exchange(context.Background(), query)
+		resChan <- qResult{resp: resp, err: err}
+	}()
+	<-entered1
+
+	// Launch Query 2 (will probe r2)
+	go func() {
+		query := new(mDNS.Msg)
+		query.SetQuestion("example.com.", mDNS.TypeA)
+		resp, err := groupTransport.Exchange(context.Background(), query)
+		resChan <- qResult{resp: resp, err: err}
+	}()
+	<-entered2
+
+	// Now both r1 and r2 have active probe leases held.
+	// Additional concurrent queries must fail fast without touching either member.
+	const additional = 10
+	var wg sync.WaitGroup
+	for range additional {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			query := new(mDNS.Msg)
+			query.SetQuestion("example.com.", mDNS.TypeA)
+			resp, err := groupTransport.Exchange(context.Background(), query)
+			resChan <- qResult{resp: resp, err: err}
+		}()
+	}
+	wg.Wait()
+
+	// Release Query 1 and Query 2
+	close(blockCh)
+
+	// Verify counts on main test goroutine
+	require.Equal(t, int64(1), r1.calls.Load(), "r1 must receive exactly 1 probe")
+	require.Equal(t, int64(1), r2.calls.Load(), "r2 must receive exactly 1 probe")
+
+	successCount := 0
+	circuitOpenCount := 0
+	for range 12 {
+		r := <-resChan
+		if r.err == nil {
+			successCount++
+		} else {
+			circuitOpenCount++
+			require.Contains(t, r.err.Error(), "all member circuits are open")
+		}
+	}
+	require.Equal(t, 2, successCount, "exactly the two probe holders should succeed")
+	require.Equal(t, 10, circuitOpenCount, "all other queries should fail fast")
+}
+
+func TestRaceCooldownExpiryAndReservation(t *testing.T) {
+	var mu sync.RWMutex
+	now := time.Unix(100, 0)
+	getTime := func() time.Time {
+		mu.RLock()
+		defer mu.RUnlock()
+		return now
+	}
+
+	recovering := &concurrencyTestTransport{tag: "recovering", delay: 20 * time.Millisecond}
+	healthy := &concurrencyTestTransport{tag: "healthy"}
+
+	groupTransport := buildGroupTransport(t, "group", "first", "sequential", 2, 0,
+		[]adapter.DNSTransport{recovering, healthy})
+
+	estimator := newDefaultRTTEstimator(4, 1, time.Minute, 5*time.Minute, getTime)
+	estimator.Record("healthy", 50*time.Millisecond)
+	estimator.RecordFailure("recovering")
+	groupTransport.rtt = estimator
+
+	const racers = 20
+	var wg sync.WaitGroup
+	startBarrier := make(chan struct{})
+
+	for i := range racers {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			<-startBarrier
+			if id == 5 {
+				// Expire cooldown right during the rush of queries
+				mu.Lock()
+				now = now.Add(time.Minute + time.Second)
+				mu.Unlock()
+			}
+			query := new(mDNS.Msg)
+			query.SetQuestion("example.com.", mDNS.TypeA)
+			_, _ = groupTransport.Exchange(context.Background(), query)
+		}(i)
+	}
+
+	close(startBarrier)
+	wg.Wait()
+
+	// Even with simultaneous cooldown expiration and query dispatch, recovering
+	// must never exceed 1 simultaneous exchange.
+	require.LessOrEqual(t, recovering.maxActive.Load(), int64(1),
+		"max concurrent recovery probes must never exceed 1")
 }
 
 func TestHalfOpenProbeCancellationReleasesReservation(t *testing.T) {
 	now := time.Unix(100, 0)
 	recoveringBlock := make(chan struct{})
-	recovering := &concurrencyTestTransport{tag: "recovering", blockCh: recoveringBlock}
+	recoveringEntered := make(chan struct{})
+	recovering := &concurrencyTestTransport{tag: "recovering", blockCh: recoveringBlock, enteredCh: recoveringEntered}
 	healthy := &concurrencyTestTransport{tag: "healthy"}
 
 	groupTransport := buildGroupTransport(t, "group", "first", "sequential", 2, 0,
@@ -281,24 +523,25 @@ func TestHalfOpenProbeCancellationReleasesReservation(t *testing.T) {
 
 	// Query 1 starts and acquires the probe, but gets canceled while waiting
 	ctx1, cancel1 := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
-	wg.Add(1)
+	type qResult struct {
+		resp *mDNS.Msg
+		err  error
+	}
+	q1Res := make(chan qResult, 1)
 	go func() {
-		defer wg.Done()
 		query := new(mDNS.Msg)
 		query.SetQuestion("example.com.", mDNS.TypeA)
-		_, err := groupTransport.Exchange(ctx1, query)
-		require.ErrorIs(t, err, context.Canceled)
+		resp, err := groupTransport.Exchange(ctx1, query)
+		q1Res <- qResult{resp: resp, err: err}
 	}()
 
-	// Wait for Query 1 to call recovering
-	for recovering.calls.Load() == 0 {
-		time.Sleep(2 * time.Millisecond)
-	}
+	// Wait deterministically for Query 1 to enter the recovering transport
+	<-recoveringEntered
 
 	// Cancel Query 1
 	cancel1()
-	wg.Wait()
+	r1 := <-q1Res
+	require.ErrorIs(t, r1.err, context.Canceled)
 
 	// Reservation must be released. Next query must be able to probe recovering
 	close(recoveringBlock)
@@ -324,6 +567,11 @@ func TestGlobalConcurrencyCapNeverExceeded(t *testing.T) {
 		[]adapter.DNSTransport{t1, t2})
 
 	const numQueries = 30
+	type qResult struct {
+		resp *mDNS.Msg
+		err  error
+	}
+	results := make(chan qResult, numQueries)
 	var wg sync.WaitGroup
 	startBarrier := make(chan struct{})
 
@@ -335,13 +583,18 @@ func TestGlobalConcurrencyCapNeverExceeded(t *testing.T) {
 			query := new(mDNS.Msg)
 			query.SetQuestion("example.com.", mDNS.TypeA)
 			resp, err := groupTransport.Exchange(context.Background(), query)
-			require.NoError(t, err)
-			require.NotNil(t, resp)
+			results <- qResult{resp: resp, err: err}
 		}()
 	}
 
 	close(startBarrier)
 	wg.Wait()
+	close(results)
+
+	for r := range results {
+		require.NoError(t, r.err)
+		require.NotNil(t, r.resp)
+	}
 
 	// Simultaneous active exchanges across all members at any time must not exceed maxConcurrent
 	totalMaxActive := tracker.maxActive.Load()
@@ -377,6 +630,11 @@ func TestGlobalConcurrencyAcrossModes(t *testing.T) {
 				[]adapter.DNSTransport{t1, t2})
 
 			const numQueries = 15
+			type qResult struct {
+				resp *mDNS.Msg
+				err  error
+			}
+			results := make(chan qResult, numQueries)
 			var wg sync.WaitGroup
 			startBarrier := make(chan struct{})
 
@@ -388,13 +646,18 @@ func TestGlobalConcurrencyAcrossModes(t *testing.T) {
 					query := new(mDNS.Msg)
 					query.SetQuestion("example.com.", mDNS.TypeA)
 					resp, err := groupTransport.Exchange(context.Background(), query)
-					require.NoError(t, err)
-					require.NotNil(t, resp)
+					results <- qResult{resp: resp, err: err}
 				}()
 			}
 
 			close(startBarrier)
 			wg.Wait()
+			close(results)
+
+			for r := range results {
+				require.NoError(t, r.err)
+				require.NotNil(t, r.resp)
+			}
 
 			totalMaxActive := tracker.maxActive.Load()
 			require.LessOrEqual(t, totalMaxActive, int64(maxConcurrent),
@@ -406,26 +669,27 @@ func TestGlobalConcurrencyAcrossModes(t *testing.T) {
 func TestGlobalConcurrencyCancellationWhileWaiting(t *testing.T) {
 	const maxConcurrent = 1
 	blockCh := make(chan struct{})
-	t1 := &concurrencyTestTransport{tag: "t1", blockCh: blockCh}
+	enteredCh := make(chan struct{})
+	t1 := &concurrencyTestTransport{tag: "t1", blockCh: blockCh, enteredCh: enteredCh}
 
 	groupTransport := ExportNewGroupWithMaxConcurrent(t, "test", "first", "sequential", maxConcurrent,
 		[]adapter.DNSTransport{t1})
 
 	// Query 1 takes the single slot and blocks
-	var wg sync.WaitGroup
-	wg.Add(1)
+	type qResult struct {
+		resp *mDNS.Msg
+		err  error
+	}
+	q1Res := make(chan qResult, 1)
 	go func() {
-		defer wg.Done()
 		query := new(mDNS.Msg)
 		query.SetQuestion("example.com.", mDNS.TypeA)
 		resp, err := groupTransport.Exchange(context.Background(), query)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
+		q1Res <- qResult{resp: resp, err: err}
 	}()
 
-	for t1.calls.Load() == 0 {
-		time.Sleep(2 * time.Millisecond)
-	}
+	// Wait deterministically for Query 1 to acquire the slot and enter Exchange
+	<-enteredCh
 
 	// Query 2 has a short timeout and will be stuck waiting for the slot
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 25*time.Millisecond)
@@ -437,7 +701,9 @@ func TestGlobalConcurrencyCancellationWhileWaiting(t *testing.T) {
 
 	// Unblock Query 1
 	close(blockCh)
-	wg.Wait()
+	r1 := <-q1Res
+	require.NoError(t, r1.err)
+	require.NotNil(t, r1.resp)
 
 	// Query 3 should be able to run immediately (slot was not leaked by Query 2)
 	t1.blockCh = nil
@@ -451,7 +717,8 @@ func TestGlobalConcurrencyCancellationWhileWaiting(t *testing.T) {
 func TestGlobalConcurrencyShutdownCancelsWaiters(t *testing.T) {
 	const maxConcurrent = 1
 	blockCh := make(chan struct{})
-	t1 := &concurrencyTestTransport{tag: "t1", blockCh: blockCh}
+	enteredCh := make(chan struct{})
+	t1 := &concurrencyTestTransport{tag: "t1", blockCh: blockCh, enteredCh: enteredCh}
 
 	groupTransport := ExportNewGroupWithMaxConcurrent(t, "test", "first", "sequential", maxConcurrent,
 		[]adapter.DNSTransport{t1})
@@ -466,11 +733,10 @@ func TestGlobalConcurrencyShutdownCancelsWaiters(t *testing.T) {
 		_, _ = groupTransport.Exchange(context.Background(), query)
 	}()
 
-	for t1.calls.Load() == 0 {
-		time.Sleep(2 * time.Millisecond)
-	}
+	// Wait deterministically for Query 1 to enter
+	<-enteredCh
 
-	// Query 2 is waiting for slot
+	// Query 2 is launched in background and waits for slot
 	query2Started := make(chan struct{})
 	var err2 error
 	wg.Add(1)
@@ -483,6 +749,7 @@ func TestGlobalConcurrencyShutdownCancelsWaiters(t *testing.T) {
 	}()
 
 	<-query2Started
+	// Small yield to let query 2 select on slot channel
 	time.Sleep(10 * time.Millisecond)
 
 	// Close the group while Query 1 is active and Query 2 is waiting
@@ -515,8 +782,21 @@ func TestGlobalConcurrencySlotReleasedOnError(t *testing.T) {
 }
 
 // -------------------------------------------------------------
-// Performance Benchmarks
+// Performance Benchmarks (with Direct Transport Baseline)
 // -------------------------------------------------------------
+
+func BenchmarkDirectTransportExchangeBaseline(b *testing.B) {
+	t1 := &concurrencyTestTransport{tag: "t1"}
+	query := new(mDNS.Msg)
+	query.SetQuestion("example.com.", mDNS.TypeA)
+	ctx := context.Background()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = t1.Exchange(ctx, query)
+	}
+}
 
 func BenchmarkSingleQueryOverhead(b *testing.B) {
 	t1 := &concurrencyTestTransport{tag: "t1"}
