@@ -50,6 +50,11 @@ type RTTEstimator interface {
 	AllSnapshots() map[string]RTTSnapshot
 }
 
+// halfOpenReserver is an optional internal interface for estimators supporting atomic half-open recovery probes.
+type halfOpenReserver interface {
+	TryAcquireHalfOpen(tag string) (release func(), acquired bool)
+}
+
 // Strategy picks an ordered candidate list from the full server pool for each query.
 type Strategy interface {
 	// Select returns a fully-ordered slice of transport tags.

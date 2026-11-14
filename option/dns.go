@@ -245,13 +245,14 @@ type GroupDNSServerOptions struct {
 }
 
 type DNSGroupAdvancedOptions struct {
-	Selection   string                `json:"selection,omitempty"`
-	Execution   string                `json:"execution,omitempty"`
-	MaxAttempts int                   `json:"max_attempts,omitempty"`
-	MaxInflight int                   `json:"max_inflight,omitempty"`
-	HedgeDelay  badoption.Duration    `json:"hedge_delay,omitempty"`
-	RetryRCodes []string              `json:"retry_rcodes,omitempty"`
-	Health      DNSGroupHealthOptions `json:"health,omitempty"`
+	Selection     string                `json:"selection,omitempty"`
+	Execution     string                `json:"execution,omitempty"`
+	MaxAttempts   int                   `json:"max_attempts,omitempty"`
+	MaxInflight   int                   `json:"max_inflight,omitempty"`
+	MaxConcurrent int                   `json:"max_concurrent,omitempty"`
+	HedgeDelay    badoption.Duration    `json:"hedge_delay,omitempty"`
+	RetryRCodes   []string              `json:"retry_rcodes,omitempty"`
+	Health        DNSGroupHealthOptions `json:"health,omitempty"`
 }
 
 type DNSGroupHealthOptions struct {

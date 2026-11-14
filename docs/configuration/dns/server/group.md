@@ -58,7 +58,8 @@ Optional overrides for the selected preset:
 - `selection`: `adaptive`, `ordered`, `random`, or `round_robin`.
 - `execution`: `failover`, `hedge`, or `parallel`.
 - `max_attempts`: maximum attempted members; cannot exceed the member count.
-- `max_inflight`: maximum simultaneous attempts; must be `1` for `failover`.
+- `max_inflight`: maximum simultaneous attempts per query; must be `1` for `failover`.
+- `max_concurrent`: maximum simultaneous upstream exchanges across the entire group runtime, default `64`.
 - `hedge_delay`: required positive delay for `hedge` execution.
 - `retry_rcodes`: replaces the retryable DNS RCODE set; defaults to `SERVFAIL` and `REFUSED`.
 - `health.window_size`: rolling outcome window, default `20`.

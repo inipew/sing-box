@@ -32,6 +32,9 @@ func (d *SequentialDispatcher) Dispatch(ctx context.Context, message *mDNS.Msg, 
 	attemptErrors := make(map[string]error, limit)
 	var retryableResponse *mDNS.Msg
 	for i := 0; i < limit; i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		tag := selected[i]
 		transport, ok := byTag[tag]
 		if !ok {

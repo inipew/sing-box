@@ -23,6 +23,7 @@ type defaultRTTEstimator struct {
 	cooldown         time.Duration
 	maxCooldown      time.Duration
 	now              func() time.Time
+	probeTokenSeq    uint64
 }
 
 type rttEntry struct {
@@ -43,6 +44,7 @@ type rttEntry struct {
 	inflight        int
 	probeAttempts   uint64
 	probeFailures   uint64
+	halfOpenToken   uint64
 }
 
 func newRTTEstimator(sampleSize int) RTTEstimator {
@@ -65,7 +67,7 @@ func newDefaultRTTEstimator(sampleSize int, failureThreshold int, cooldown time.
 }
 
 func (e *defaultRTTEstimator) Record(tag string, rtt time.Duration) {
-	ms := float64(rtt.Milliseconds())
+	ms := float64(rtt) / float64(time.Millisecond)
 	if ms < 0 {
 		ms = 0
 	}
@@ -92,6 +94,7 @@ func (e *defaultRTTEstimator) recordLatency(entry *rttEntry, ms float64) {
 	entry.failures = 0 // reset consecutive failures on success
 	entry.circuitUntil = time.Time{}
 	entry.currentCooldown = 0
+	entry.halfOpenToken = 0
 	entry.lastQueryTime = e.now()
 }
 
@@ -113,6 +116,7 @@ func (e *defaultRTTEstimator) RecordFailure(tag string) {
 		}
 		entry.circuitUntil = entry.lastQueryTime.Add(entry.currentCooldown)
 	}
+	entry.halfOpenToken = 0
 }
 
 func (e *defaultRTTEstimator) Begin(tag string) {
@@ -138,7 +142,7 @@ func (e *defaultRTTEstimator) RecordProbe(tag string, rtt time.Duration, probeEr
 	entry := e.getOrCreate(tag)
 	entry.probeAttempts++
 	if probeErr == nil {
-		ms := max(float64(rtt.Milliseconds()), 0)
+		ms := max(float64(rtt)/float64(time.Millisecond), 0)
 		e.recordLatency(entry, ms)
 		return
 	}
@@ -154,6 +158,36 @@ func (e *defaultRTTEstimator) RecordProbe(tag string, rtt time.Duration, probeEr
 		}
 		entry.circuitUntil = entry.lastQueryTime.Add(entry.currentCooldown)
 	}
+	entry.halfOpenToken = 0
+}
+
+func (e *defaultRTTEstimator) TryAcquireHalfOpen(tag string) (func(), bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	entry, ok := e.entries[tag]
+	if !ok {
+		return nil, false
+	}
+	if entry.circuitUntil.IsZero() || e.now().Before(entry.circuitUntil) {
+		return nil, false
+	}
+	if entry.halfOpenToken != 0 || entry.inflight > 0 {
+		return nil, false
+	}
+	e.probeTokenSeq++
+	token := e.probeTokenSeq
+	entry.halfOpenToken = token
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if entry.halfOpenToken == token {
+				entry.halfOpenToken = 0
+			}
+		})
+	}
+	return release, true
 }
 
 func appendWindow(window []bool, success bool, size int) []bool {
@@ -199,7 +233,7 @@ func (e *defaultRTTEstimator) Sorted(tags []string) []string {
 			}
 			if !entry.circuitUntil.IsZero() && e.now().Before(entry.circuitUntil) {
 				snaps[i].failures = max(snaps[i].failures, e.failureThreshold)
-			} else if !entry.circuitUntil.IsZero() && entry.inflight == 0 {
+			} else if !entry.circuitUntil.IsZero() && entry.inflight == 0 && entry.halfOpenToken == 0 {
 				snaps[i].halfOpen = true
 			}
 		}

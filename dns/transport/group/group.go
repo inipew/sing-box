@@ -68,6 +68,7 @@ type groupRuntime struct {
 	closing    bool
 	waiter     sync.WaitGroup
 	workers    *sync.WaitGroup
+	slots      chan struct{}
 }
 
 func (r *groupRuntime) acquire() bool {
@@ -89,6 +90,61 @@ func (r *groupRuntime) beginClose() {
 	r.closing = true
 	r.access.Unlock()
 	r.cancel()
+}
+
+type admissionTransport struct {
+	adapter.DNSTransport
+	runtimeCtx context.Context
+	slots      chan struct{}
+}
+
+func (t *admissionTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := t.runtimeCtx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case t.slots <- struct{}{}:
+		defer func() {
+			<-t.slots
+		}()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-t.runtimeCtx.Done():
+		return nil, t.runtimeCtx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return t.DNSTransport.Exchange(ctx, message)
+}
+
+func (t *admissionTransport) ExchangeWithResponseCheck(ctx context.Context, message *mDNS.Msg, checker adapter.DNSResponseChecker) (*mDNS.Msg, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := t.runtimeCtx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case t.slots <- struct{}{}:
+		defer func() {
+			<-t.slots
+		}()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-t.runtimeCtx.Done():
+		return nil, t.runtimeCtx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if withCheck, ok := t.DNSTransport.(adapter.DNSTransportWithResponseCheck); ok {
+		return withCheck.ExchangeWithResponseCheck(ctx, message, checker)
+	}
+	return t.DNSTransport.Exchange(ctx, message)
 }
 
 // RegisterTransport registers the group transport type with the DNS transport registry.
@@ -277,6 +333,11 @@ func (t *GroupTransport) Start(stage adapter.StartStage, scope *adapter.Scope) e
 		clonedMembers = cloned
 	}
 
+	maxConcurrent := t.policy.maxConcurrent
+	if maxConcurrent <= 0 {
+		maxConcurrent = defaultMaxConcurrent
+	}
+	slots := make(chan struct{}, maxConcurrent)
 	runtimeCtx, cancelRuntime := context.WithCancel(t.ctx)
 	runtime := &groupRuntime{
 		ctx:        runtimeCtx,
@@ -287,13 +348,18 @@ func (t *GroupTransport) Start(stage adapter.StartStage, scope *adapter.Scope) e
 		dispatcher: dispatcher,
 		owned:      clonedMembers,
 		workers:    workerWaiter,
+		slots:      slots,
 	}
 	for _, member := range members {
 		if _, exists := runtime.byTag[member.Tag()]; exists {
 			cancelRuntime()
 			return closeOwnedTransports(E.New("dns group[", t.tag, "]: duplicate member tag: ", member.Tag()), clonedMembers)
 		}
-		runtime.byTag[member.Tag()] = member
+		runtime.byTag[member.Tag()] = &admissionTransport{
+			DNSTransport: member,
+			runtimeCtx:   runtimeCtx,
+			slots:        slots,
+		}
 	}
 	if t.hcOptions != nil && t.hcOptions.Enabled {
 		runtime.health = NewHealthChecker(runtimeCtx, members, t.hcOptions, t.rtt, t.logger)
@@ -420,7 +486,11 @@ func (t *GroupTransport) ExchangeWithResponseCheck(ctx context.Context, message 
 	if len(selected) == 0 {
 		return nil, E.New("dns group[", t.tag, "]: strategy returned no servers")
 	}
-	selected = prioritizeHalfOpen(selected, t.rtt.AllSnapshots())
+	var releaseHalfOpen func()
+	selected, releaseHalfOpen = t.prioritizeHalfOpen(selected)
+	if releaseHalfOpen != nil {
+		defer releaseHalfOpen()
+	}
 
 	queryCtx, cancelQuery := context.WithCancel(ctx)
 	stopRuntimeCancel := context.AfterFunc(runtime.ctx, cancelQuery)
@@ -429,6 +499,45 @@ func (t *GroupTransport) ExchangeWithResponseCheck(ctx context.Context, message 
 		cancelQuery()
 	}()
 	return runtime.dispatcher.Dispatch(queryCtx, message, selected, runtime.byTag, t.rtt, checker)
+}
+
+func (t *GroupTransport) prioritizeHalfOpen(selected []string) ([]string, func()) {
+	reserver, ok := t.rtt.(halfOpenReserver)
+	if !ok {
+		return prioritizeHalfOpen(selected, t.rtt.AllSnapshots()), nil
+	}
+	snapshots := t.rtt.AllSnapshots()
+	for index, tag := range selected {
+		snapshot, ok := snapshots[tag]
+		if !ok || snapshot.State != "half_open" {
+			continue
+		}
+		if release, acquired := reserver.TryAcquireHalfOpen(tag); acquired {
+			if index == 0 {
+				return selected, release
+			}
+			result := append([]string(nil), selected...)
+			copy(result[1:index+1], selected[:index])
+			result[0] = tag
+			return result, release
+		}
+	}
+	// If this query could not acquire any half-open probe, but selected[0] is in half_open state
+	// (meaning another query is currently probing it), demote it behind any non-half-open candidates.
+	if len(selected) > 1 {
+		if snap, ok := snapshots[selected[0]]; ok && snap.State == "half_open" {
+			for i := 1; i < len(selected); i++ {
+				if otherSnap, ok := snapshots[selected[i]]; !ok || otherSnap.State != "half_open" {
+					result := append([]string(nil), selected...)
+					tag := result[0]
+					copy(result[:i], result[1:i+1])
+					result[i] = tag
+					return result, nil
+				}
+			}
+		}
+	}
+	return selected, nil
 }
 
 func prioritizeHalfOpen(selected []string, snapshots map[string]RTTSnapshot) []string {
@@ -470,13 +579,14 @@ func (t *GroupTransport) ExchangeAsync(ctx context.Context, message *mDNS.Msg, c
 
 func (t *GroupTransport) GroupSnapshot() adapter.DNSGroupSnapshot {
 	result := adapter.DNSGroupSnapshot{
-		Tag:          t.tag,
-		Policy:       t.policy.name,
-		Selection:    string(t.policy.selection),
-		Execution:    string(t.policy.execution),
-		MaxAttempts:  t.policy.maxAttempts,
-		MaxInflight:  t.policy.maxInflight,
-		HedgeDelayMs: t.policy.hedgeDelay.Milliseconds(),
+		Tag:           t.tag,
+		Policy:        t.policy.name,
+		Selection:     string(t.policy.selection),
+		Execution:     string(t.policy.execution),
+		MaxAttempts:   t.policy.maxAttempts,
+		MaxInflight:   t.policy.maxInflight,
+		MaxConcurrent: t.policy.maxConcurrent,
+		HedgeDelayMs:  t.policy.hedgeDelay.Milliseconds(),
 	}
 	runtime := t.runtime.Load()
 	if runtime == nil {

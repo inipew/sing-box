@@ -66,17 +66,22 @@ func ExportNewGroupWithMembersAndDelay(
 }
 
 func buildGroupTransport(
-	t *testing.T,
+	t testing.TB,
 	tag, strategyName, modeStr string,
 	maxRetries int,
 	fallbackDelay time.Duration,
 	members []adapter.DNSTransport,
 ) *GroupTransport {
-	t.Helper()
+	if t != nil {
+		t.Helper()
+	}
 
 	strategy, err := NewStrategy(strategyName)
 	if err != nil {
-		t.Fatalf("invalid strategy %q: %v", strategyName, err)
+		if t != nil {
+			t.Fatalf("invalid strategy %q: %v", strategyName, err)
+		}
+		panic(err)
 	}
 
 	if fallbackDelay == 0 {
@@ -113,9 +118,14 @@ func buildGroupTransport(
 		rtt:           newRTTEstimator(0),
 	}
 	runtimeCtx, cancelRuntime := context.WithCancel(context.Background())
+	slots := make(chan struct{}, defaultMaxConcurrent)
 	byTag := make(map[string]adapter.DNSTransport, len(members))
 	for _, member := range members {
-		byTag[member.Tag()] = member
+		byTag[member.Tag()] = &admissionTransport{
+			DNSTransport: member,
+			runtimeCtx:   runtimeCtx,
+			slots:        slots,
+		}
 	}
 	tr.runtime.Store(&groupRuntime{
 		ctx:        runtimeCtx,
@@ -125,8 +135,38 @@ func buildGroupTransport(
 		strategy:   strategy,
 		dispatcher: dispatcher,
 		workers:    workerWaiter,
+		slots:      slots,
 	})
 
-	t.Cleanup(func() { _ = tr.Close() })
+	if t != nil {
+		t.Cleanup(func() { _ = tr.Close() })
+	}
+	return tr
+}
+
+func ExportNewGroupWithMaxConcurrent(
+	t testing.TB,
+	tag, strategyName, modeStr string,
+	maxConcurrent int,
+	members []adapter.DNSTransport,
+) *GroupTransport {
+	if t != nil {
+		t.Helper()
+	}
+	tr := buildGroupTransport(t, tag, strategyName, modeStr, 0, defaultFallbackDelay, members)
+	if maxConcurrent > 0 {
+		runtime := tr.runtime.Load()
+		if runtime != nil {
+			slots := make(chan struct{}, maxConcurrent)
+			runtime.slots = slots
+			for _, m := range members {
+				runtime.byTag[m.Tag()] = &admissionTransport{
+					DNSTransport: m,
+					runtimeCtx:   runtime.ctx,
+					slots:        slots,
+				}
+			}
+		}
+	}
 	return tr
 }

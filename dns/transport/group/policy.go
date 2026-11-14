@@ -25,6 +25,8 @@ const (
 	executionFailover executionMode = "failover"
 	executionHedge    executionMode = "hedge"
 	executionParallel executionMode = "parallel"
+
+	defaultMaxConcurrent = 64
 )
 
 type compiledPolicy struct {
@@ -33,6 +35,7 @@ type compiledPolicy struct {
 	execution        executionMode
 	maxAttempts      int
 	maxInflight      int
+	maxConcurrent    int
 	hedgeDelay       time.Duration
 	retryRCodes      map[int]bool
 	windowSize       int
@@ -54,6 +57,7 @@ func compilePolicy(memberCount int, options option.GroupDNSServerOptions) (compi
 		name:             name,
 		selection:        selectionAdaptive,
 		maxAttempts:      memberCount,
+		maxConcurrent:    defaultMaxConcurrent,
 		windowSize:       20,
 		failureThreshold: 3,
 		cooldown:         30 * time.Second,
@@ -102,6 +106,14 @@ func compilePolicy(memberCount int, options option.GroupDNSServerOptions) (compi
 	}
 	if advanced.MaxInflight > 0 {
 		policy.maxInflight = advanced.MaxInflight
+	}
+	if advanced.MaxConcurrent > 0 {
+		if advanced.MaxConcurrent > 10000 {
+			return compiledPolicy{}, fmt.Errorf("DNS group max_concurrent %d exceeds maximum limit of 10000", advanced.MaxConcurrent)
+		}
+		policy.maxConcurrent = advanced.MaxConcurrent
+	} else if advanced.MaxConcurrent < 0 {
+		return compiledPolicy{}, fmt.Errorf("DNS group max_concurrent must not be negative")
 	}
 	if policy.execution == executionFailover {
 		if advanced.MaxInflight > 1 {
