@@ -67,6 +67,41 @@ func TestCompilePolicyRejectsInvalidActiveProbeType(t *testing.T) {
 	require.EqualError(t, err, "unknown DNS group active probe type: NOT_A_DNS_TYPE")
 }
 
+func TestCompilePolicyMaxConcurrentDefaultsAndOverrides(t *testing.T) {
+	// Default maxConcurrent is 64
+	policy, err := compilePolicy(3, option.GroupDNSServerOptions{Policy: "reliable"})
+	require.NoError(t, err)
+	require.Equal(t, 64, policy.maxConcurrent)
+
+	// Custom override
+	custom, err := compilePolicy(3, option.GroupDNSServerOptions{
+		Policy: "reliable",
+		Advanced: &option.DNSGroupAdvancedOptions{
+			MaxConcurrent: 16,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 16, custom.maxConcurrent)
+}
+
+func TestCompilePolicyRejectsNegativeOrExcessiveMaxConcurrent(t *testing.T) {
+	_, err := compilePolicy(2, option.GroupDNSServerOptions{
+		Policy: "reliable",
+		Advanced: &option.DNSGroupAdvancedOptions{
+			MaxConcurrent: -1,
+		},
+	})
+	require.EqualError(t, err, "DNS group max_concurrent must not be negative")
+
+	_, err2 := compilePolicy(2, option.GroupDNSServerOptions{
+		Policy: "reliable",
+		Advanced: &option.DNSGroupAdvancedOptions{
+			MaxConcurrent: 10001,
+		},
+	})
+	require.EqualError(t, err2, "DNS group max_concurrent 10001 exceeds maximum limit of 10000")
+}
+
 func TestRTTEstimatorOpensAndRecoversCircuit(t *testing.T) {
 	now := time.Unix(100, 0)
 	estimator := newDefaultRTTEstimator(4, 3, 30*time.Second, 5*time.Minute, func() time.Time { return now })
