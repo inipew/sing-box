@@ -129,14 +129,15 @@ type DNSGroupSnapshotProvider interface {
 }
 
 type DNSGroupSnapshot struct {
-	Tag          string                   `json:"tag"`
-	Policy       string                   `json:"policy"`
-	Selection    string                   `json:"selection"`
-	Execution    string                   `json:"execution"`
-	MaxAttempts  int                      `json:"max_attempts"`
-	MaxInflight  int                      `json:"max_inflight"`
-	HedgeDelayMs int64                    `json:"hedge_delay_ms,omitempty"`
-	Members      []DNSGroupMemberSnapshot `json:"members"`
+	Tag           string                   `json:"tag"`
+	Policy        string                   `json:"policy"`
+	Selection     string                   `json:"selection"`
+	Execution     string                   `json:"execution"`
+	MaxAttempts   int                      `json:"max_attempts"`
+	MaxInflight   int                      `json:"max_inflight"`
+	MaxConcurrent int                      `json:"max_concurrent,omitempty"`
+	HedgeDelayMs  int64                    `json:"hedge_delay_ms,omitempty"`
+	Members       []DNSGroupMemberSnapshot `json:"members"`
 }
 
 type DNSGroupMemberSnapshot struct {
