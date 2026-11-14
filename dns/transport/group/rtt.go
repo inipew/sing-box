@@ -94,7 +94,6 @@ func (e *defaultRTTEstimator) recordLatency(entry *rttEntry, ms float64) {
 	entry.failures = 0 // reset consecutive failures on success
 	entry.circuitUntil = time.Time{}
 	entry.currentCooldown = 0
-	entry.halfOpenToken = 0
 	entry.lastQueryTime = e.now()
 }
 
@@ -116,7 +115,6 @@ func (e *defaultRTTEstimator) RecordFailure(tag string) {
 		}
 		entry.circuitUntil = entry.lastQueryTime.Add(entry.currentCooldown)
 	}
-	entry.halfOpenToken = 0
 }
 
 func (e *defaultRTTEstimator) Begin(tag string) {
@@ -158,7 +156,6 @@ func (e *defaultRTTEstimator) RecordProbe(tag string, rtt time.Duration, probeEr
 		}
 		entry.circuitUntil = entry.lastQueryTime.Add(entry.currentCooldown)
 	}
-	entry.halfOpenToken = 0
 }
 
 func (e *defaultRTTEstimator) TryAcquireHalfOpen(tag string) (func(), bool) {
