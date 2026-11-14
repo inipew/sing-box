@@ -491,6 +491,9 @@ func (t *GroupTransport) ExchangeWithResponseCheck(ctx context.Context, message 
 	if releaseHalfOpen != nil {
 		defer releaseHalfOpen()
 	}
+	if len(selected) == 0 {
+		return nil, E.New("dns group[", t.tag, "]: all member circuits are open (recovery probe in progress)")
+	}
 
 	queryCtx, cancelQuery := context.WithCancel(ctx)
 	stopRuntimeCancel := context.AfterFunc(runtime.ctx, cancelQuery)
@@ -507,37 +510,44 @@ func (t *GroupTransport) prioritizeHalfOpen(selected []string) ([]string, func()
 		return prioritizeHalfOpen(selected, t.rtt.AllSnapshots()), nil
 	}
 	snapshots := t.rtt.AllSnapshots()
-	for index, tag := range selected {
+	var acquiredRelease func()
+	var acquiredTag string
+
+	// 1. Attempt to acquire at most one half-open candidate in selected as an exclusive recovery probe.
+	for _, tag := range selected {
 		snapshot, ok := snapshots[tag]
 		if !ok || snapshot.State != "half_open" {
 			continue
 		}
 		if release, acquired := reserver.TryAcquireHalfOpen(tag); acquired {
-			if index == 0 {
-				return selected, release
-			}
-			result := append([]string(nil), selected...)
-			copy(result[1:index+1], selected[:index])
-			result[0] = tag
-			return result, release
+			acquiredRelease = release
+			acquiredTag = tag
+			break
 		}
 	}
-	// If this query could not acquire any half-open probe, but selected[0] is in half_open state
-	// (meaning another query is currently probing it), demote it behind any non-half-open candidates.
-	if len(selected) > 1 {
-		if snap, ok := snapshots[selected[0]]; ok && snap.State == "half_open" {
-			for i := 1; i < len(selected); i++ {
-				if otherSnap, ok := snapshots[selected[i]]; !ok || otherSnap.State != "half_open" {
-					result := append([]string(nil), selected...)
-					tag := result[0]
-					copy(result[:i], result[1:i+1])
-					result[i] = tag
-					return result, nil
-				}
-			}
-		}
+
+	// 2. Filter candidate list:
+	// - The acquired candidate is placed at index 0 (as primary recovery probe).
+	// - Any OTHER candidate in half_open state is EXCLUDED because this query does not hold its
+	//   exclusive reservation token (meaning another query is already probing it).
+	// - All non-half-open candidates (closed, or open when all servers are failed) are kept.
+	result := make([]string, 0, len(selected))
+	if acquiredTag != "" {
+		result = append(result, acquiredTag)
 	}
-	return selected, nil
+	for _, tag := range selected {
+		if tag == acquiredTag {
+			continue
+		}
+		if snapshot, ok := snapshots[tag]; ok && snapshot.State == "half_open" {
+			// This member is in half-open state and this query does not hold its probe reservation.
+			// Exclude it completely so this query cannot send requests to it.
+			continue
+		}
+		result = append(result, tag)
+	}
+
+	return result, acquiredRelease
 }
 
 func prioritizeHalfOpen(selected []string, snapshots map[string]RTTSnapshot) []string {
