@@ -3737,6 +3737,32 @@
             "on_demand": {
               "type": "boolean"
             },
+            "http2_connect_mode": {
+              "type": "string",
+              "enum": [
+                "extended",
+                "plain"
+              ]
+            },
+            "capsule_include_context_id": {
+              "type": "boolean"
+            },
+            "protocol": {
+              "type": "string"
+            },
+            "address": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/IPPrefix"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/IPPrefix"
+                  }
+                }
+              ]
+            },
             "idle_timeout": {
               "$ref": "#/$defs/Duration"
             },
@@ -5125,198 +5151,6 @@
             },
             "on_demand": {
               "type": "boolean"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "type": {
-              "const": "warp"
-            },
-            "tag": {
-              "type": "string"
-            },
-            "detour": {
-              "type": "string",
-              "x-tag-reference": "outbound"
-            },
-            "bind_interface": {
-              "type": "string"
-            },
-            "inet4_bind_address": {
-              "$ref": "#/$defs/IPAddress"
-            },
-            "inet6_bind_address": {
-              "$ref": "#/$defs/IPAddress"
-            },
-            "bind_address_no_port": {
-              "type": "boolean"
-            },
-            "protect_path": {
-              "type": "string"
-            },
-            "routing_mark": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 4294967295
-                },
-                {
-                  "type": "string"
-                }
-              ]
-            },
-            "reuse_addr": {
-              "type": "boolean"
-            },
-            "netns": {
-              "type": "string",
-              "x-tag-reference": "network_namespace"
-            },
-            "connect_timeout": {
-              "$ref": "#/$defs/Duration"
-            },
-            "tcp_fast_open": {
-              "type": "boolean"
-            },
-            "tcp_multi_path": {
-              "type": "boolean"
-            },
-            "disable_tcp_keep_alive": {
-              "type": "boolean"
-            },
-            "tcp_keep_alive": {
-              "$ref": "#/$defs/Duration"
-            },
-            "tcp_keep_alive_interval": {
-              "$ref": "#/$defs/Duration"
-            },
-            "udp_fragment": {
-              "type": "boolean"
-            },
-            "domain_resolver": {
-              "$ref": "#/$defs/DomainResolver"
-            },
-            "network_strategy": {
-              "type": "string",
-              "enum": [
-                "default",
-                "fallback",
-                "hybrid"
-              ]
-            },
-            "network_type": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/InterfaceType"
-                },
-                {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/$defs/InterfaceType"
-                  }
-                }
-              ]
-            },
-            "fallback_network_type": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/InterfaceType"
-                },
-                {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/$defs/InterfaceType"
-                  }
-                }
-              ]
-            },
-            "fallback_delay": {
-              "$ref": "#/$defs/Duration"
-            },
-            "system": {
-              "type": "boolean"
-            },
-            "name": {
-              "type": "string"
-            },
-            "mtu": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 4294967295
-            },
-            "address": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/IPPrefix"
-                },
-                {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/$defs/IPPrefix"
-                  }
-                }
-              ]
-            },
-            "private_key": {
-              "type": "string"
-            },
-            "listen_port": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 65535
-            },
-            "udp_timeout": {
-              "$ref": "#/$defs/Duration"
-            },
-            "workers": {
-              "type": "integer"
-            },
-            "server": {
-              "type": "string"
-            },
-            "server_port": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 65535
-            },
-            "peer_public_key": {
-              "type": "string"
-            },
-            "pre_shared_key": {
-              "type": "string"
-            },
-            "reserved": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 255
-                  }
-                }
-              ]
-            },
-            "persistent_keepalive_interval": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 65535
-            },
-            "provision": {
-              "$ref": "#/$defs/WARPProvisionOptions"
-            },
-            "bootstrap_resolver": {
-              "$ref": "#/$defs/DomainResolver"
             }
           },
           "required": [
@@ -15143,21 +14977,6 @@
             "type"
           ],
           "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "type": {
-              "const": "warp"
-            },
-            "tag": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "additionalProperties": false
         }
       ]
     },
@@ -18794,21 +18613,6 @@
         },
         "alterId": {
           "type": "integer"
-        }
-      },
-      "additionalProperties": false
-    },
-    "WARPProvisionOptions": {
-      "type": "object",
-      "properties": {
-        "license": {
-          "type": "string"
-        },
-        "cache_path": {
-          "type": "string"
-        },
-        "recreate": {
-          "type": "boolean"
         }
       },
       "additionalProperties": false
