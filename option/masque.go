@@ -37,6 +37,11 @@ type _MASQUEClientEndpointOptions struct {
 	OnDemand               bool                 `json:"on_demand,omitempty"`
 	HTTP2Options           HTTP2Options         `json:"-"`
 	HTTP3Options           QUICOptions          `json:"-"`
+
+	HTTP2ConnectMode        string                           `json:"http2_connect_mode,omitempty" enum:"extended,plain"`
+	CapsuleIncludeContextID *bool                            `json:"capsule_include_context_id,omitempty"`
+	Protocol                string                           `json:"protocol,omitempty"`
+	Address                 badoption.Listable[netip.Prefix] `json:"address,omitempty"`
 }
 
 type MASQUEClientEndpointOptions _MASQUEClientEndpointOptions

@@ -51,6 +51,8 @@ type ClientOptions struct {
 	DisableVersionFallback bool
 	HTTP2Options           option.HTTP2Options
 	HTTP3Options           option.QUICOptions
+
+	HTTP2ConnectMode string
 }
 
 type http3Client interface {
@@ -91,6 +93,7 @@ type Client struct {
 	http3Backoff                    atomic.Int64
 	http3ExtendedConnectUnsupported atomic.Bool
 	closeIdle                       atomic.Bool
+	http2PlainConnect               bool
 }
 
 func NewClientWithTLS(ctx context.Context, logger logger.ContextLogger, outboundDialer N.Dialer, serverOptions option.ServerOptions, tlsOptions option.OutboundTLSOptions, domainResolver *option.DomainResolveOptions, options ClientOptions) (*Client, error) {
@@ -137,6 +140,11 @@ func NewClientWithTLS(ctx context.Context, logger logger.ContextLogger, outbound
 }
 
 func NewClient(options ClientOptions) (*Client, error) {
+	switch options.HTTP2ConnectMode {
+	case "", "extended", "plain":
+	default:
+		return nil, E.New("unknown HTTP/2 CONNECT mode: ", options.HTTP2ConnectMode)
+	}
 	client := &Client{
 		dialer:                 options.Dialer,
 		http1Dialer:            options.HTTP1Dialer,
@@ -146,6 +154,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 		headers:                options.Headers.Clone(),
 		version:                options.Version,
 		disableVersionFallback: options.DisableVersionFallback,
+		http2PlainConnect:      options.HTTP2ConnectMode == "plain",
 	}
 	if client.headers != nil {
 		client.host = client.headers.Get("Host")

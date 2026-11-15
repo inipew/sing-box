@@ -109,6 +109,7 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
 	}
 	httpClient, err := http.NewClientWithTLS(ctx, logger, outboundDialer, options.ServerOptions, common.PtrValueOrDefault(options.TLS), options.DomainResolver, http.ClientOptions{
 		Authority:              authority,
+		HTTP2ConnectMode:       options.HTTP2ConnectMode,
 		Username:               options.Username,
 		Password:               options.Password,
 		Headers:                headers,
@@ -142,6 +143,10 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
 		Path:            options.Path,
 		AdvertiseRoutes: options.AdvertiseRoutes,
 		Handler:         clientEndpoint,
+
+		Protocol:                options.Protocol,
+		CapsuleIncludeContextID: options.CapsuleIncludeContextID,
+		Address:                 options.Address,
 	})
 	if err != nil {
 		httpClient.Close()
