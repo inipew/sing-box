@@ -84,6 +84,11 @@ func NewClient(options ClientOptions) (*Client, error) {
 	if err != nil {
 		return nil, E.Cause(err, "build advertised routes")
 	}
+	for _, prefix := range options.Address {
+		if !prefix.IsValid() {
+			return nil, E.New("invalid address prefix: ", prefix)
+		}
+	}
 	ctx, cancel := context.WithCancel(options.Context)
 	protocol := options.Protocol
 	if protocol == "" {
@@ -193,7 +198,7 @@ func (c *Client) connect() (bool, error) {
 		return false, nil
 	}
 	current.session = newSession(c.ctx, stream, current, c.handler.FrontHeadroom)
-	current.rawDatagramCapsules = c.rawDatagramCapsules && current.datagrams == nil
+	current.rawDatagramCapsules = c.rawDatagramCapsules
 	c.current = current
 	c.access.Unlock()
 	if len(c.localAddresses) > 0 {
