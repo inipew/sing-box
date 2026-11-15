@@ -40,6 +40,10 @@ type ClientOptions struct {
 	Path            string
 	AdvertiseRoutes []netip.Prefix
 	Handler         ClientHandler
+
+	Protocol                string
+	CapsuleIncludeContextID *bool
+	Address                 []netip.Prefix
 }
 
 type Client struct {
@@ -57,6 +61,10 @@ type Client struct {
 	lastError       error
 	stateUpdated    chan struct{}
 	loopDone        chan struct{}
+
+	protocol            string
+	localAddresses      []netip.Prefix
+	rawDatagramCapsules bool
 }
 
 type clientSession struct {
@@ -77,6 +85,10 @@ func NewClient(options ClientOptions) (*Client, error) {
 		return nil, E.Cause(err, "build advertised routes")
 	}
 	ctx, cancel := context.WithCancel(options.Context)
+	protocol := options.Protocol
+	if protocol == "" {
+		protocol = upgradeToken
+	}
 	return &Client{
 		ctx:             ctx,
 		cancel:          cancel,
@@ -86,6 +98,10 @@ func NewClient(options ClientOptions) (*Client, error) {
 		advertiseRoutes: advertiseRoutes,
 		handler:         options.Handler,
 		stateUpdated:    make(chan struct{}),
+
+		protocol:            protocol,
+		localAddresses:      slices.Clone(options.Address),
+		rawDatagramCapsules: options.CapsuleIncludeContextID != nil && !*options.CapsuleIncludeContextID,
 	}, nil
 }
 
@@ -164,12 +180,12 @@ func (c *Client) loop() {
 
 func (c *Client) connect() (bool, error) {
 	dialCtx, cancelDial := context.WithTimeout(c.ctx, C.TCPTimeout)
-	stream, err := c.httpClient.OpenTunnel(dialCtx, upgradeToken, c.template.Expand())
+	stream, err := c.httpClient.OpenTunnel(dialCtx, c.protocol, c.template.Expand())
 	cancelDial()
 	if err != nil {
 		return false, err
 	}
-	current := &clientSession{client: c}
+	current := &clientSession{client: c, configuration: Configuration{Address: slices.Clone(c.localAddresses)}}
 	c.access.Lock()
 	if c.suspended || c.restarting {
 		suspended := c.suspended
@@ -181,12 +197,17 @@ func (c *Client) connect() (bool, error) {
 		return false, nil
 	}
 	current.session = newSession(c.ctx, stream, current, c.handler.FrontHeadroom)
+	current.rawDatagramCapsules = c.rawDatagramCapsules && current.datagrams == nil
 	c.current = current
 	c.access.Unlock()
-	err = current.writeCapsule(newAddressCapsule(capsuleTypeAddressRequest, []AssignedAddress{
-		{RequestID: 1, Prefix: netip.PrefixFrom(netip.IPv4Unspecified(), 32)},
-		{RequestID: 2, Prefix: netip.PrefixFrom(netip.IPv6Unspecified(), 128)},
-	}))
+	if len(c.localAddresses) > 0 {
+		err = current.updateConfiguration(current.configuration)
+	} else {
+		err = current.writeCapsule(newAddressCapsule(capsuleTypeAddressRequest, []AssignedAddress{
+			{RequestID: 1, Prefix: netip.PrefixFrom(netip.IPv4Unspecified(), 32)},
+			{RequestID: 2, Prefix: netip.PrefixFrom(netip.IPv6Unspecified(), 128)},
+		}))
+	}
 	if err == nil && len(c.advertiseRoutes) > 0 {
 		err = current.writeCapsule(newRouteCapsule(c.advertiseRoutes))
 	}

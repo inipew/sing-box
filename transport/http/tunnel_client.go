@@ -56,10 +56,11 @@ func (c *Client) openTunnel(ctx context.Context, request tunnelRequest) (net.Con
 		}
 		c.markHTTP3Broken()
 	}
-	if !extendedConnectAvailable && c.tlsDialer != nil && c.disableVersionFallback {
+	plainConnect := c.http2PlainConnect
+	if !extendedConnectAvailable && !plainConnect && c.tlsDialer != nil && c.disableVersionFallback {
 		return nil, nil, errExtendedConnectUnavailable
 	}
-	if extendedConnectAvailable && c.tlsDialer != nil && !c.http2Unsupported.Load() && !c.http2ExtendedConnectUnsupported.Load() {
+	if (extendedConnectAvailable || plainConnect) && c.tlsDialer != nil && !c.http2Unsupported.Load() && !c.http2ExtendedConnectUnsupported.Load() {
 		clientConn, conn, err := c.acquireHTTP2(ctx)
 		if err != nil {
 			return nil, nil, err
@@ -147,14 +148,19 @@ func (c *Client) openTunnelHTTP2(ctx context.Context, clientConn *http2ClientCon
 	requestURL := *request.url
 	requestURL.Scheme = "https"
 	requestURL.Host = c.authority()
+	if c.http2PlainConnect && requestURL.Port() == "" {
+		requestURL.Host = net.JoinHostPort(requestURL.Hostname(), "443")
+	}
 	httpRequest := &http.Request{
 		Method: http.MethodConnect,
 		URL:    &requestURL,
-		Host:   c.authority(),
+		Host:   requestURL.Host,
 		Header: buildRequestHeader(c.headers, c.authorization, request.originAuthorization),
 	}
-	httpRequest.Header.Set(":protocol", request.protocol)
-	httpRequest.Header.Set("Capsule-Protocol", "?1")
+	if !c.http2PlainConnect {
+		httpRequest.Header.Set(":protocol", request.protocol)
+		httpRequest.Header.Set("Capsule-Protocol", "?1")
+	}
 	streamConn, err := c.roundTripHTTP2(ctx, clientConn, httpRequest, request.destination)
 	if err != nil {
 		return nil, err

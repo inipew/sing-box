@@ -39,6 +39,8 @@ type session struct {
 	handler        sessionHandler
 	packetHeadroom func() int
 	writeAccess    sync.Mutex
+
+	rawDatagramCapsules bool
 }
 
 func newSession(ctx context.Context, stream io.ReadWriteCloser, handler sessionHandler, packetHeadroom func() int) *session {
@@ -119,22 +121,29 @@ func (s *session) loopCapsule() error {
 }
 
 func (s *session) readDatagramCapsule(length int) error {
-	contextID, contextLength, err := transportHTTP.ReadVarint(s.reader)
-	if err != nil {
-		return err
+	payloadLength := length
+	if !s.rawDatagramCapsules {
+		contextID, contextLength, err := transportHTTP.ReadVarint(s.reader)
+		if err != nil {
+			return err
+		}
+		if contextLength > length {
+			return E.New("malformed datagram capsule")
+		}
+		payloadLength -= contextLength
+		if contextID != 0 {
+			_, err = s.reader.Discard(payloadLength)
+			return err
+		}
 	}
-	if contextLength > length {
-		return E.New("malformed datagram capsule")
-	}
-	payloadLength := length - contextLength
-	if contextID != 0 || payloadLength == 0 || payloadLength > maxPacketSize {
-		_, err = s.reader.Discard(payloadLength)
+	if payloadLength == 0 || payloadLength > maxPacketSize {
+		_, err := s.reader.Discard(payloadLength)
 		return err
 	}
 	headroom := s.packetHeadroom()
 	buffer := buf.NewSize(headroom + payloadLength)
 	buffer.Resize(headroom, 0)
-	_, err = buffer.ReadFullFrom(s.reader, payloadLength)
+	_, err := buffer.ReadFullFrom(s.reader, payloadLength)
 	if err != nil {
 		buffer.Release()
 		return err
@@ -214,6 +223,9 @@ func (s *session) writePackets(buffers []*buf.Buffer) error {
 			buf.ReleaseMulti(capsules)
 			buf.ReleaseMulti(buffers[i+1:])
 			return err
+		}
+		if s.rawDatagramCapsules {
+			datagram.Advance(1)
 		}
 		capsules = append(capsules, datagram)
 	}
