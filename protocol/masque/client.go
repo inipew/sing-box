@@ -70,6 +70,28 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
 		options.MTU = masque.DefaultMTU
 	}
 	version := options.ResolvedVersion()
+	if options.HTTP2ConnectMode == "plain" && version == 3 && options.DisableVersionFallback {
+		return nil, E.New("http2_connect_mode: plain has no effect with version: 3 and disable_version_fallback: true")
+	}
+	if len(options.Address) > 0 {
+		var hasIPv4, hasIPv6 bool
+		for _, prefix := range options.Address {
+			if !prefix.IsValid() {
+				return nil, E.New("invalid address prefix: ", prefix)
+			}
+			if prefix.Addr().Is4() {
+				hasIPv4 = true
+			} else if prefix.Addr().Is6() {
+				hasIPv6 = true
+			}
+		}
+		if !hasIPv4 {
+			logger.Warn("address has no IPv4 prefix, IPv4 traffic may not work")
+		}
+		if !hasIPv6 {
+			logger.Warn("address has no IPv6 prefix, IPv6 traffic may not work")
+		}
+	}
 	http2Options := options.HTTP2Options
 	if version == 3 {
 		http2Options = options.HTTP3Options.HTTP2Options

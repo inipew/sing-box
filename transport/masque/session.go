@@ -217,6 +217,9 @@ func (s *session) writePackets(buffers []*buf.Buffer) error {
 				}
 				err = E.New("QUIC connection is unable to carry ", minimumLinkMTU, " bytes packets")
 			case errors.Is(err, transportHTTP.ErrDatagramUnsupported):
+				if s.rawDatagramCapsules {
+					datagram.Advance(1)
+				}
 				capsules = append(capsules, datagram)
 				continue
 			}

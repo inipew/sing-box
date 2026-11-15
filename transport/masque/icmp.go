@@ -49,6 +49,9 @@ func buildICMPError(packet []byte, errorType tun.ICMPError, inet4Source netip.Ad
 	if header.IPVersion(packet) == header.IPv6Version {
 		source = inet6Source
 	}
+	if !source.IsValid() || source.IsUnspecified() {
+		return nil, false
+	}
 	reply, built := tun.BuildICMPError(packet, errorType, source, uint32(mtu), headroom)
 	if !built {
 		return nil, false
