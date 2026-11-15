@@ -21,6 +21,10 @@
   "disable_version_fallback": false,
   "tls": {},
   "advertise_routes": [],
+  "protocol": "",
+  "address": [],
+  "http2_connect_mode": "",
+  "capsule_include_context_id": true,
   "system": false,
   "name": "",
   "mtu": 1280,
@@ -93,6 +97,38 @@ Required for HTTP/3.
 List of IP prefixes to advertise to the server.
 
 The server will route traffic for these prefixes into this endpoint, where it is handled as inbound traffic.
+
+### protocol
+
+MASQUE upgrade token or CONNECT protocol identifier.
+
+`connect-ip` is used by default.
+
+Can be set to custom protocol tokens (e.g. `cf-connect-ip` for Cloudflare WARP).
+
+### address
+
+List of static IP prefixes assigned to this endpoint.
+
+If not specified, dynamic address assignment via the `ADDRESS_REQUEST` capsule ([RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484)) will be used. When static addresses are configured, dynamic address request is skipped.
+
+### http2_connect_mode
+
+CONNECT method mode when using HTTP/2.
+
+Available values: `extended`, `plain`.
+
+`extended` is used by default (Extended CONNECT per RFC 8441 / RFC 9484, using the `:protocol` pseudo-header).
+
+When `plain`, standard HTTP CONNECT is used without `:protocol` and `Capsule-Protocol` request headers, for compatibility with non-standard proxies (e.g. Cloudflare WARP).
+
+### capsule_include_context_id
+
+Whether to include a Context ID (RFC 9297) prefix in DATAGRAM capsule payloads over the HTTP stream.
+
+`true` is used by default.
+
+When set to `false`, raw IP packets are framed directly in DATAGRAM capsules without the Context ID prefix, for compatibility with non-standard endpoints (e.g. Cloudflare WARP over HTTP/2).
 
 ### system
 

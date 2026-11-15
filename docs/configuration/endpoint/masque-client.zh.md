@@ -21,6 +21,10 @@
   "disable_version_fallback": false,
   "tls": {},
   "advertise_routes": [],
+  "protocol": "",
+  "address": [],
+  "http2_connect_mode": "",
+  "capsule_include_context_id": true,
   "system": false,
   "name": "",
   "mtu": 1280,
@@ -93,6 +97,38 @@ HTTP/3 需要 TLS。
 向服务器声明的 IP 前缀列表。
 
 服务器会把发往这些前缀的流量路由到此 endpoint，并在此作为入站流量处理。
+
+### protocol
+
+MASQUE upgrade 令牌或 CONNECT 协议标识符。
+
+默认使用 `connect-ip`。
+
+可设置为自定义协议令牌（例如 Cloudflare WARP 所用的 `cf-connect-ip`）。
+
+### address
+
+分配给此 endpoint 的静态 IP 前缀列表。
+
+如果未指定，将通过 `ADDRESS_REQUEST` 胶囊（[RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484)）进行动态地址分配。配置静态地址时，将跳过动态地址请求。
+
+### http2_connect_mode
+
+使用 HTTP/2 时的 CONNECT 方法模式。
+
+可用值：`extended`、`plain`。
+
+默认使用 `extended`（符合 RFC 8441 / RFC 9484 的扩展 CONNECT，使用 `:protocol` 伪标头）。
+
+当为 `plain` 时，使用标准 HTTP CONNECT，不发送 `:protocol` 和 `Capsule-Protocol` 请求标头，用于兼容非标准代理（如 Cloudflare WARP）。
+
+### capsule_include_context_id
+
+是否在 HTTP 流上的 DATAGRAM 胶囊负载中包含 Context ID（RFC 9297）前缀。
+
+默认使用 `true`。
+
+当设为 `false` 时，DATAGRAM 胶囊中直接封装原始 IP 数据包而不添加 Context ID 前缀，用于兼容非标准端点（如 HTTP/2 上的 Cloudflare WARP）。
 
 ### system
 
