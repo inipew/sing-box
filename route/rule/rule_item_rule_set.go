@@ -2,6 +2,7 @@ package rule
 
 import (
 	"strings"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing/common"
@@ -130,8 +131,10 @@ type ruleSetContentProvider interface {
 }
 
 type ruleSetContent struct {
-	rules    []adapter.HeadlessRule
-	metadata adapter.RuleSetMetadata
+	rules       []adapter.HeadlessRule
+	metadata    adapter.RuleSetMetadata
+	ruleCount   uint64
+	lastUpdated time.Time
 }
 
 func (c *ruleSetContent) mergeableRule() *DefaultHeadlessRule {
