@@ -73,7 +73,7 @@ func getRuleProvider(writer http.ResponseWriter, request *http.Request) {
 func updateRuleProvider(writer http.ResponseWriter, request *http.Request) {
 	provider := request.Context().Value(CtxKeyProvider).(adapter.RuleSetProvider)
 	if err := provider.Update(request.Context()); err != nil {
-		render.Status(request, http.StatusInternalServerError)
+		render.Status(request, http.StatusServiceUnavailable)
 		render.JSON(writer, request, newError(err.Error()))
 		return
 	}
