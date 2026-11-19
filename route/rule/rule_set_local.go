@@ -32,12 +32,10 @@ type LocalRuleSet struct {
 	content     atomic.Pointer[ruleSetContent]
 	fileFormat  string
 	watcher     *fswatch.Watcher
-	access      sync.RWMutex
+	access      sync.Mutex
 	callbacks   list.List[adapter.RuleSetUpdateCallback]
 	refs        atomic.Int32
 	ruleSetType string
-	ruleCount   uint64
-	lastUpdated time.Time
 }
 
 func NewLocalRuleSet(ctx context.Context, logger logger.Logger, tag string, options option.RuleSet) (*LocalRuleSet, error) {
@@ -48,6 +46,7 @@ func NewLocalRuleSet(ctx context.Context, logger logger.Logger, tag string, opti
 		fileFormat:  options.Format,
 		ruleSetType: options.Type,
 	}
+	ruleSet.content.Store(&ruleSetContent{})
 	if options.Type == C.RuleSetTypeInline {
 		if len(options.InlineOptions.Rules) == 0 {
 			return nil, E.New("empty inline rule-set")
@@ -85,13 +84,20 @@ func (s *LocalRuleSet) Name() string {
 }
 
 func (s *LocalRuleSet) ProviderInfo() adapter.RuleSetProviderInfo {
-	s.access.RLock()
-	defer s.access.RUnlock()
+	content := s.content.Load()
+	var (
+		ruleCount uint64
+		updatedAt time.Time
+	)
+	if content != nil {
+		ruleCount = content.ruleCount
+		updatedAt = content.lastUpdated
+	}
 	return adapter.RuleSetProviderInfo{
 		Type:      s.ruleSetType,
 		Format:    s.fileFormat,
-		RuleCount: s.ruleCount,
-		UpdatedAt: s.lastUpdated,
+		RuleCount: ruleCount,
+		UpdatedAt: updatedAt,
 	}
 }
 
@@ -167,10 +173,13 @@ func (s *LocalRuleSet) reloadRulesAt(headlessRules []option.HeadlessRule, update
 	if err != nil {
 		return err
 	}
-	s.content.Store(&ruleSetContent{rules: rules, metadata: metadata})
+	s.content.Store(&ruleSetContent{
+		rules:       rules,
+		metadata:    metadata,
+		ruleCount:   uint64(len(headlessRules)),
+		lastUpdated: updatedAt,
+	})
 	s.access.Lock()
-	s.ruleCount = uint64(len(headlessRules))
-	s.lastUpdated = updatedAt
 	callbacks := s.callbacks.Array()
 	s.access.Unlock()
 	for _, callback := range callbacks {
@@ -199,7 +208,15 @@ func (s *LocalRuleSet) DecRef() {
 
 func (s *LocalRuleSet) Cleanup() {
 	if s.refs.Load() == 0 {
-		s.content.Store(&ruleSetContent{})
+		current := s.content.Load()
+		if current != nil && (current.ruleCount > 0 || !current.lastUpdated.IsZero()) {
+			s.content.Store(&ruleSetContent{
+				ruleCount:   current.ruleCount,
+				lastUpdated: current.lastUpdated,
+			})
+		} else {
+			s.content.Store(&ruleSetContent{})
+		}
 	}
 }
 
