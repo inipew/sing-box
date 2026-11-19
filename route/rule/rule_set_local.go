@@ -26,16 +26,18 @@ import (
 var _ adapter.RuleSet = (*LocalRuleSet)(nil)
 
 type LocalRuleSet struct {
-	ctx         context.Context
-	logger      logger.Logger
-	tag         string
-	content     atomic.Pointer[ruleSetContent]
-	fileFormat  string
-	watcher     *fswatch.Watcher
-	access      sync.Mutex
-	callbacks   list.List[adapter.RuleSetUpdateCallback]
-	refs        atomic.Int32
-	ruleSetType string
+	ctx          context.Context
+	logger       logger.Logger
+	tag          string
+	path         string
+	content      atomic.Pointer[ruleSetContent]
+	fileFormat   string
+	watcher      *fswatch.Watcher
+	updateAccess sync.Mutex
+	access       sync.Mutex
+	callbacks    list.List[adapter.RuleSetUpdateCallback]
+	refs         atomic.Int32
+	ruleSetType  string
 }
 
 func NewLocalRuleSet(ctx context.Context, logger logger.Logger, tag string, options option.RuleSet) (*LocalRuleSet, error) {
@@ -58,6 +60,7 @@ func NewLocalRuleSet(ctx context.Context, logger logger.Logger, tag string, opti
 	} else {
 		filePath := filemanager.BasePath(ctx, strings.ReplaceAll(options.LocalOptions.Path, C.RuleSetTagPlaceholder, tag))
 		filePath, _ = filepath.Abs(filePath)
+		ruleSet.path = filePath
 		err := ruleSet.reloadFile(filePath)
 		if err != nil {
 			return nil, err
@@ -65,6 +68,8 @@ func NewLocalRuleSet(ctx context.Context, logger logger.Logger, tag string, opti
 		watcher, err := fswatch.NewWatcher(fswatch.Options{
 			Path: []string{filePath},
 			Callback: func(path string) {
+				ruleSet.updateAccess.Lock()
+				defer ruleSet.updateAccess.Unlock()
 				uErr := ruleSet.reloadFile(path)
 				if uErr != nil {
 					logger.Error(E.Cause(uErr, "reload rule-set ", tag))
@@ -101,8 +106,13 @@ func (s *LocalRuleSet) ProviderInfo() adapter.RuleSetProviderInfo {
 	}
 }
 
-func (s *LocalRuleSet) Update(context.Context) error {
-	return nil
+func (s *LocalRuleSet) Update(ctx context.Context) error {
+	if s.ruleSetType == C.RuleSetTypeInline || s.path == "" {
+		return nil
+	}
+	s.updateAccess.Lock()
+	defer s.updateAccess.Unlock()
+	return s.reloadFileContext(ctx, s.path)
 }
 
 func (s *LocalRuleSet) String() string {
@@ -120,14 +130,24 @@ func (s *LocalRuleSet) StartContext(ctx context.Context, startContext *adapter.H
 }
 
 func (s *LocalRuleSet) reloadFile(path string) error {
-	fileInfo, err := filemanager.Stat(s.ctx, path)
+	return s.reloadFileContext(s.ctx, path)
+}
+
+func (s *LocalRuleSet) reloadFileContext(ctx context.Context, path string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	fileInfo, err := filemanager.Stat(ctx, path)
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	var ruleSet option.PlainRuleSetCompat
 	switch s.fileFormat {
 	case C.RuleSetFormatSource, "":
-		content, err := filemanager.ReadFile(s.ctx, path)
+		content, err := filemanager.ReadFile(ctx, path)
 		if err != nil {
 			return err
 		}
@@ -136,7 +156,7 @@ func (s *LocalRuleSet) reloadFile(path string) error {
 			return err
 		}
 	case C.RuleSetFormatBinary:
-		setFile, err := filemanager.Open(s.ctx, path)
+		setFile, err := filemanager.Open(ctx, path)
 		if err != nil {
 			return err
 		}
@@ -148,28 +168,32 @@ func (s *LocalRuleSet) reloadFile(path string) error {
 	default:
 		return E.New("unknown rule-set format: ", s.fileFormat)
 	}
-	plainRuleSet, err := mmapRuleSet(s.ctx, s.logger, s.tag, ruleSet).Upgrade()
+	plainRuleSet, err := mmapRuleSet(ctx, s.logger, s.tag, ruleSet).Upgrade()
 	if err != nil {
 		return err
 	}
-	return s.reloadRulesAt(plainRuleSet.Rules, fileInfo.ModTime())
+	return s.reloadRulesAtContext(ctx, plainRuleSet.Rules, fileInfo.ModTime())
 }
 
 func (s *LocalRuleSet) reloadRules(headlessRules []option.HeadlessRule) error {
-	return s.reloadRulesAt(headlessRules, time.Time{})
+	return s.reloadRulesAtContext(s.ctx, headlessRules, time.Time{})
 }
 
 func (s *LocalRuleSet) reloadRulesAt(headlessRules []option.HeadlessRule, updatedAt time.Time) error {
+	return s.reloadRulesAtContext(s.ctx, headlessRules, updatedAt)
+}
+
+func (s *LocalRuleSet) reloadRulesAtContext(ctx context.Context, headlessRules []option.HeadlessRule, updatedAt time.Time) error {
 	rules := make([]adapter.HeadlessRule, len(headlessRules))
 	var err error
 	for i, ruleOptions := range headlessRules {
-		rules[i], err = NewHeadlessRule(s.ctx, ruleOptions)
+		rules[i], err = NewHeadlessRule(ctx, ruleOptions)
 		if err != nil {
 			return E.Cause(err, "parse rule_set.rules.[", i, "]")
 		}
 	}
 	metadata := buildRuleSetMetadata(headlessRules)
-	err = validateRuleSetMetadataUpdate(s.ctx, s.tag, metadata)
+	err = validateRuleSetMetadataUpdate(ctx, s.tag, metadata)
 	if err != nil {
 		return err
 	}
