@@ -113,10 +113,10 @@ func (s *Fallback) All() []string {
 	return s.tags
 }
 
-func (s *Fallback) References() []string {
+func (s *Fallback) References() ([]string, []string) {
 	group := s.group
 	if group == nil {
-		return nil
+		return nil, nil
 	}
 	var references []string
 	tcpOutbound := group.selectedOutboundTCP
@@ -134,9 +134,9 @@ func (s *Fallback) References() []string {
 		references = append(references, udpOutbound.Tag())
 	}
 	if len(references) == 0 && len(s.tags) > 0 {
-		return s.tags[:1]
+		return s.tags[:1], nil
 	}
-	return references
+	return references, nil
 }
 
 func (s *Fallback) URLTest(ctx context.Context) (map[string]uint16, error) {

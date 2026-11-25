@@ -218,11 +218,11 @@ func (t *GroupTransport) Environment() []string {
 	return environment
 }
 
-func (t *GroupTransport) References() []string {
+func (t *GroupTransport) References() ([]string, []string) {
 	if t.detour != "" {
-		return []string{t.detour}
+		return []string{t.detour}, nil
 	}
-	return nil
+	return nil, nil
 }
 
 func (t *GroupTransport) Reset() {

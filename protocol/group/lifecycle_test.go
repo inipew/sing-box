@@ -133,15 +133,21 @@ func TestFallbackReferences(t *testing.T) {
 	require.NoError(t, created.(adapter.Lifecycle).Start(adapter.StartStateStart, scope))
 
 	// Without history, first member is selected as fallback
-	require.Equal(t, []string{"node1"}, referrer.References())
+	outbounds, dnsServers := referrer.References()
+	require.Equal(t, []string{"node1"}, outbounds)
+	require.Empty(t, dnsServers)
 
 	// node2 is healthy, node1 is not
 	history.StoreURLTestHistory("node2", &adapter.URLTestHistory{Time: time.Now(), Delay: 50})
-	require.Equal(t, []string{"node2"}, referrer.References())
+	outbounds, dnsServers = referrer.References()
+	require.Equal(t, []string{"node2"}, outbounds)
+	require.Empty(t, dnsServers)
 
 	// node1 becomes healthy as well, takes priority over node2
 	history.StoreURLTestHistory("node1", &adapter.URLTestHistory{Time: time.Now(), Delay: 100})
-	require.Equal(t, []string{"node1"}, referrer.References())
+	outbounds, dnsServers = referrer.References()
+	require.Equal(t, []string{"node1"}, outbounds)
+	require.Empty(t, dnsServers)
 }
 
 func TestLoadBalanceReferences(t *testing.T) {
@@ -162,16 +168,22 @@ func TestLoadBalanceReferences(t *testing.T) {
 	require.NoError(t, created.(adapter.Lifecycle).Start(adapter.StartStateStart, scope))
 
 	// Without history, fallback returns the first member
-	require.Equal(t, []string{"node1"}, referrer.References())
+	outbounds, dnsServers := referrer.References()
+	require.Equal(t, []string{"node1"}, outbounds)
+	require.Empty(t, dnsServers)
 
 	// node1 and node3 are healthy, node2 is not
 	history.StoreURLTestHistory("node1", &adapter.URLTestHistory{Time: time.Now(), Delay: 50})
 	history.StoreURLTestHistory("node3", &adapter.URLTestHistory{Time: time.Now(), Delay: 60})
-	require.Equal(t, []string{"node1", "node3"}, referrer.References())
+	outbounds, dnsServers = referrer.References()
+	require.Equal(t, []string{"node1", "node3"}, outbounds)
+	require.Empty(t, dnsServers)
 
 	// All nodes are healthy
 	history.StoreURLTestHistory("node2", &adapter.URLTestHistory{Time: time.Now(), Delay: 70})
-	require.ElementsMatch(t, []string{"node1", "node2", "node3"}, referrer.References())
+	outbounds, dnsServers = referrer.References()
+	require.ElementsMatch(t, []string{"node1", "node2", "node3"}, outbounds)
+	require.Empty(t, dnsServers)
 }
 
 func TestFallbackRejectsDuplicateTags(t *testing.T) {
