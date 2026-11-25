@@ -115,10 +115,10 @@ func (s *LoadBalance) All() []string {
 	return s.tags
 }
 
-func (s *LoadBalance) References() []string {
+func (s *LoadBalance) References() ([]string, []string) {
 	group := s.group
 	if group == nil {
-		return nil
+		return nil, nil
 	}
 	var references []string
 	seen := make(map[string]bool)
@@ -144,9 +144,9 @@ func (s *LoadBalance) References() []string {
 		}
 	}
 	if len(references) == 0 && len(s.tags) > 0 {
-		return s.tags[:1]
+		return s.tags[:1], nil
 	}
-	return references
+	return references, nil
 }
 
 func (s *LoadBalance) URLTest(ctx context.Context) (map[string]uint16, error) {

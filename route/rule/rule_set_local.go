@@ -168,7 +168,7 @@ func (s *LocalRuleSet) reloadFileContext(ctx context.Context, path string) error
 	default:
 		return E.New("unknown rule-set format: ", s.fileFormat)
 	}
-	ruleSet, err := mmapRuleSet(ctx, s.logger, s.tag, ruleSet)
+	ruleSet, err = mmapRuleSet(ctx, s.logger, s.tag, ruleSet)
 	if err != nil {
 		return err
 	}
