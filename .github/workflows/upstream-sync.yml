@@ -1,0 +1,243 @@
+name: Sync upstream and preserve fork commits
+
+on:
+  schedule:
+    # 02:00 WIB (UTC+7) on alternating UTC calendar days.
+    # GitHub cron is calendar-based, not an exact rolling 48-hour timer.
+    - cron: "0 19 */2 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync-dev-next-test
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Reset to SagerNet/testing and replay fork commits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TARGET_BRANCH: dev-next-test
+      PRESERVE_BRANCH: dev-next-test-preserve
+      # Exact merge base shared by the fork branch and SagerNet/testing.
+      PRESERVE_BASE: 060f54a9a57cf5b6212f3cba2a4101776f15f1f7
+    steps:
+      - name: Checkout target branch with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dev-next-test
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Fetch refs and validate preservation history
+        id: refs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          fetch_retry() {
+            local attempt=1
+            local max_attempts=3
+            until "$@"; do
+              if (( attempt >= max_attempts )); then
+                echo "::error::Git fetch failed after ${max_attempts} attempts."
+                return 1
+              fi
+              echo "::warning::Git fetch attempt ${attempt} failed; retrying."
+              sleep "$((attempt * 5))"
+              attempt=$((attempt + 1))
+            done
+          }
+
+          git remote add upstream https://github.com/SagerNet/sing-box.git
+          fetch_retry git fetch --no-tags --prune origin \
+            +refs/heads/dev-next-test:refs/remotes/origin/dev-next-test \
+            +refs/heads/dev-next-test-preserve:refs/remotes/origin/dev-next-test-preserve
+          fetch_retry git fetch --no-tags --prune upstream \
+            +refs/heads/testing:refs/remotes/upstream/testing
+
+          origin_sha="$(git rev-parse refs/remotes/origin/dev-next-test)"
+          upstream_sha="$(git rev-parse refs/remotes/upstream/testing)"
+          preserve_head="$(git rev-parse refs/remotes/origin/dev-next-test-preserve)"
+
+          # Fail closed if expected objects, ancestry, or workflow are missing.
+          git cat-file -e "${PRESERVE_BASE}^{commit}"
+          git cat-file -e "${preserve_head}^{commit}"
+          git cat-file -e "${upstream_sha}^{commit}"
+          git merge-base --is-ancestor "$PRESERVE_BASE" "$preserve_head" || {
+            echo "::error::Preservation base is not an ancestor of dev-next-test-preserve."
+            exit 1
+          }
+          git merge-base --is-ancestor "$PRESERVE_BASE" "$upstream_sha" || {
+            echo "::error::SagerNet/testing no longer contains the configured preservation base; manual review is required."
+            exit 1
+          }
+          git cat-file -e "$preserve_head:.github/workflows/upstream-sync.yml"
+
+          commit_count="$(git rev-list --count "${PRESERVE_BASE}..${preserve_head}")"
+          if [[ "$commit_count" -eq 0 ]]; then
+            echo "::error::Preservation range is empty; refusing to reset dev-next-test."
+            exit 1
+          fi
+          if [[ "$commit_count" -gt 200 ]]; then
+            echo "::error::Preservation range has $commit_count commits (limit: 200); manual review is required."
+            exit 1
+          fi
+
+          {
+            echo "origin_sha=$origin_sha"
+            echo "upstream_sha=$upstream_sha"
+            echo "preserve_head=$preserve_head"
+            echo "commit_count=$commit_count"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Target branch before sync: $origin_sha"
+          echo "SagerNet/testing: $upstream_sha"
+          echo "Preservation branch head: $preserve_head"
+          echo "Fork commits to replay: $commit_count"
+
+      - name: Replay preserved commits onto upstream
+        id: replay
+        env:
+          PRESERVE_HEAD: ${{ steps.refs.outputs.preserve_head }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          notify_telegram() {
+            local message="$1"
+            if [[ -z "${BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
+              echo "::warning::Telegram notification skipped: BOT_TOKEN or TELEGRAM_CHAT_ID secret is missing."
+              return 0
+            fi
+            if ! curl --fail --silent --show-error --max-time 20 \
+              --retry 2 --retry-delay 3 --retry-all-errors \
+              --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
+              --data-urlencode "text=$message" \
+              "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" >/dev/null; then
+              echo "::warning::Could not send Telegram sync notification."
+            fi
+          }
+
+          range="${PRESERVE_BASE}..${PRESERVE_HEAD}"
+          mapfile -t commits < <(git rev-list --reverse --first-parent "$range")
+
+          if [[ "${#commits[@]}" -eq 0 ]]; then
+            echo "::error::Preserved commit range is empty."
+            exit 1
+          fi
+
+          # Require a strictly linear history to avoid silently dropping
+          # side branches or replaying merge commits with ambiguous semantics.
+          expected_parent="$PRESERVE_BASE"
+          for commit in "${commits[@]}"; do
+            read -r -a commit_line <<< "$(git rev-list --parents -n 1 "$commit")"
+            if [[ "${#commit_line[@]}" -ne 2 ]]; then
+              echo "::error::Preserved commit $commit is not a single-parent commit."
+              exit 1
+            fi
+            if [[ "${commit_line[1]}" != "$expected_parent" ]]; then
+              echo "::error::Preserved history is not linear at $commit."
+              exit 1
+            fi
+            expected_parent="$commit"
+          done
+          if [[ "$expected_parent" != "$PRESERVE_HEAD" ]]; then
+            echo "::error::First-parent replay did not reach preservation HEAD."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --detach refs/remotes/upstream/testing
+
+          skipped=0
+          for commit in "${commits[@]}"; do
+            echo "Cherry-picking $commit"
+            if git -c core.editor=true cherry-pick "$commit"; then
+              continue
+            fi
+
+            # Skip only a genuinely empty/already-applied commit. Any conflict
+            # or other failed state aborts the whole replay and notifies owner.
+            if [[ -f .git/CHERRY_PICK_HEAD ]] &&
+               [[ -z "$(git diff --name-only --diff-filter=U)" ]] &&
+               git diff --quiet &&
+               git diff --cached --quiet; then
+              git cherry-pick --skip
+              skipped=$((skipped + 1))
+              echo "::notice::Skipped already-applied/empty commit $commit."
+              continue
+            fi
+
+            conflict_files="$(git diff --name-only --diff-filter=U | head -n 20 | tr '\n' ',' | sed 's/,$//')"
+            commit_title="$(git show -s --format=%s "$commit" | cut -c1-240)"
+            if [[ -n "$conflict_files" ]]; then
+              failure_kind="Cherry-pick conflict"
+            else
+              failure_kind="Cherry-pick failure"
+              conflict_files="No unmerged paths reported; inspect the run log."
+            fi
+            git cherry-pick --abort || true
+
+            run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            message="$(printf '⚠️ sing-box upstream sync needs attention\n\nRepository: inipew/sing-box\nTarget: dev-next-test\nUpstream: SagerNet/sing-box testing\nFailure: %s\nCommit: %s\nSubject: %s\nFiles: %s\n\nNo force-push was performed. Manual resolution is required.\nRun: %s' "$failure_kind" "$commit" "$commit_title" "$conflict_files" "$run_url")"
+            notify_telegram "$message"
+
+            echo "::error::$failure_kind at $commit. Target branch was not changed."
+            exit 1
+          done
+
+          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
+          echo "Replay completed. Empty/already-applied commits skipped: $skipped"
+
+      - name: Revalidate upstream and preservation refs, then push with lease
+        id: push
+        env:
+          EXPECTED_ORIGIN_SHA: ${{ steps.refs.outputs.origin_sha }}
+          EXPECTED_UPSTREAM_SHA: ${{ steps.refs.outputs.upstream_sha }}
+          EXPECTED_PRESERVE_SHA: ${{ steps.refs.outputs.preserve_head }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          # Refuse to publish if upstream, target, or preservation changed mid-run.
+          git fetch --no-tags upstream +refs/heads/testing:refs/remotes/upstream/testing
+          git fetch --no-tags origin +refs/heads/dev-next-test:refs/remotes/origin/dev-next-test
+          git fetch --no-tags origin +refs/heads/dev-next-test-preserve:refs/remotes/origin/dev-next-test-preserve
+
+          latest_upstream="$(git rev-parse refs/remotes/upstream/testing)"
+          latest_origin="$(git rev-parse refs/remotes/origin/dev-next-test)"
+          latest_preserve="$(git rev-parse refs/remotes/origin/dev-next-test-preserve)"
+
+          if [[ "$latest_upstream" != "$EXPECTED_UPSTREAM_SHA" ]]; then
+            echo "::error::SagerNet/testing advanced during this run; refusing to push a stale replay."
+            exit 1
+          fi
+          if [[ "$latest_origin" != "$EXPECTED_ORIGIN_SHA" ]]; then
+            echo "::error::dev-next-test changed during this run; refusing to overwrite concurrent work."
+            exit 1
+          fi
+          if [[ "$latest_preserve" != "$EXPECTED_PRESERVE_SHA" ]]; then
+            echo "::error::dev-next-test-preserve changed during this run; refusing to omit newly preserved commits."
+            exit 1
+          fi
+
+          result_sha="$(git rev-parse HEAD)"
+          if [[ "$result_sha" == "$EXPECTED_ORIGIN_SHA" ]]; then
+            echo "Target branch already matches the replay result; no push is needed."
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git push \
+            --force-with-lease="refs/heads/dev-next-test:$EXPECTED_ORIGIN_SHA" \
+            origin HEAD:refs/heads/dev-next-test
+
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          echo "Published synchronized dev-next-test: $result_sha"
